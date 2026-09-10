@@ -30,13 +30,13 @@ LEVERAGE = 10
 CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))    # US$ 10.00 por lado
 
 # -------------------------------------------------------------------
-# MODELO PRÁTICO (PARCIAL DE 0.50% NO BTC/USDT)
+# MODELO PRÁTICO (PARCIAL DE 0.25% NO BTC/USDT)
 # -------------------------------------------------------------------
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50%
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0025))     # 0.25%
 TAXA_ESTIMADA_PCT = 0.0020                                 # Cobertura de taxas (0.20%)
 
 # DERIVAÇÃO MATEMÁTICA
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)               # Repique na metade (0.25%)
+ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)               # Repique na metade (0.125%)
 
 COOLDOWN_SEGUNDOS = 600
 
@@ -100,7 +100,7 @@ def executar_ciclo():
     
     print(f"✅ Execução Real Fills: Long {p_long:.2f} | Short {p_short:.2f} | Preço Ref PMP: {p_ref:.2f}", flush=True)
     
-    # 3. Níveis de Preço com Parcial a 0,50% e Trava 0x0 Ajustada com Desconto/Acréscimo de Taxa
+    # 3. Níveis de Preço com Parcial a 0,25% e Trava 0x0 Corrigida
     p_parcial_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
     p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - (PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT)))
     p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
