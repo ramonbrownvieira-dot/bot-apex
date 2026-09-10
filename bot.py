@@ -33,18 +33,29 @@ TRAVA_0X0_PCT = 0.0576     # 5.76%
 ALVO_FINAL_PCT = 0.0800    # 8.00%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
-def obter_ordens_abertas():
-    """Retorna todas as ordens abertas, incluindo ordens condicionais / algo."""
+def obter_margens_posicoes():
+    """Lê diretamente a margem alocada (initialMargin / positionInitialMargin) nas pontas Long e Short."""
+    margin_long, margin_short = 0.0, 0.0
     try:
-        # Força o fetch de ordens de gatilho/stop no CCXT
-        ordens = exchange.fetch_open_orders(SYMBOL, params={'type': 'all'})
-        if not ordens:
-            # Fallback caso a API da Binance prefira sem parâmetros
-            ordens = exchange.fetch_open_orders(SYMBOL)
-        return ordens
+        positions = exchange.fetch_positions([SYMBOL])
+        for pos in positions:
+            if pos['symbol'] == SYMBOL:
+                side = pos.get('side') or pos.get('info', {}).get('positionSide')
+                # Tenta capturar a margem usada na posição
+                initial_margin = float(pos.get('initialMargin', 0) or pos.get('info', {}).get('positionInitialMargin', 0) or 0)
+                
+                # Caso a API traga contrato/notional, calcula margem aproximada = notional / leverage
+                if initial_margin == 0:
+                    notional = abs(float(pos.get('notional', 0) or pos.get('info', {}).get('notional', 0) or 0))
+                    initial_margin = notional / LEVERAGE
+                
+                if side == 'LONG' or pos.get('positionSide') == 'LONG':
+                    margin_long = initial_margin
+                elif side == 'SHORT' or pos.get('positionSide') == 'SHORT':
+                    margin_short = initial_margin
     except Exception as e:
-        print(f"⚠️ Erro ao consultar ordens abertas: {e}", flush=True)
-        return []
+        print(f"⚠️ Erro ao consultar margens: {e}", flush=True)
+    return margin_long, margin_short
 
 def executar_ciclo():
     print("🚀 [FASE 1] Executando entradas e posicionando Parciais e Trava 0x0...", flush=True)
@@ -83,13 +94,13 @@ def executar_ciclo():
     print(f"📌 Parcial em: {preco_parcial} | Trava 0x0 em: {preco_0x0}", flush=True)
     
     # 3. Armar Parciais e Trava 0x0 Inicial
-    o_parcial_short = exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
+    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
         'workingType': 'MARK_PRICE'
     })
     
-    o_parcial_long = exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
+    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_parcial,
         'workingType': 'MARK_PRICE'
@@ -107,72 +118,71 @@ def executar_ciclo():
         'workingType': 'MARK_PRICE'
     })
     
-    id_parcial_short = str(o_parcial_short['id'])
-    id_parcial_long = str(o_parcial_long['id'])
+    print("⏳ [FASE 1 OK] Posição aberta. Monitorando equivalência de margem...", flush=True)
+    time.sleep(10)
     
-    print("⏳ [FASE 1 OK] Aguardando acionamento da Parcial no mercado...", flush=True)
-    time.sleep(5)
+    # 4. MONITORAMENTO FASE 1 (Comparação de Margem)
+    parcial_detectada = False
+    contagem_zerada = 0
     
-    # 4. LOOP DE MONITORAMENTO DAS ORDENS DE PARCIAL
-    contagem_sem_ordens = 0
     while True:
-        ordens_ativas = obter_ordens_abertas()
-        ids_ativas = [str(o['id']) for o in ordens_ativas]
+        m_long, m_short = obter_margens_posicoes()
         
-        # Se nenhuma ordem condicional for encontrada por 3 vezes seguidas (15s)
-        if len(ids_ativas) == 0:
-            contagem_sem_ordens += 1
-            if contagem_sem_ordens >= 3:
-                print("🏁 Posições e ordens zeradas na Trava 0x0 antes da Parcial.", flush=True)
+        # Inexistente: Ambas as margens zeradas
+        if m_long <= 0.05 and m_short <= 0.05:
+            contagem_zerada += 1
+            if contagem_zerada >= 3:
+                print(f"🏁 Margens zeradas (Long: ${m_long:.2f} | Short: ${m_short:.2f}). Trava 0x0 executada antes da Parcial.", flush=True)
                 return
         else:
-            contagem_sem_ordens = 0
+            contagem_zerada = 0
             
-        # Verifica se alguma das ordens de Parcial foi executada pelo mercado
-        parcial_short_executada = id_parcial_short not in ids_ativas
-        parcial_long_executada = id_parcial_long not in ids_ativas
-        
-        # Se uma das parciais foi executada (e ainda existem ordens ativas no book)
-        if (parcial_short_executada or parcial_long_executada) and len(ids_ativas) > 0:
-            print("🎯 PARCIAL EXECUTADA PELO MERCADO!", flush=True)
-            break
+            # Muito distantes: Desequilíbrio claro de margem por execução de Parcial
+            diferenca_margem = abs(m_long - m_short)
             
+            # Se a diferença de margem for maior que $0.50 (sinal de parcial executada)
+            if diferenca_margem >= 0.50:
+                print(f"🎯 PARCIAL EXECUTADA! Margem Long: ${m_long:.2f} | Margem Short: ${m_short:.2f} (Dif: ${diferenca_margem:.2f})", flush=True)
+                parcial_detectada = True
+                break
+                
         time.sleep(5)
     
     # 5. FASE 2: Posicionar Alvo Final para a posição remanescente
-    print("🚀 [FASE 2] Posicionando ordens de Alvo Final e mantendo Trava 0x0...", flush=True)
-    
-    qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
-    qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
-    
-    try:
-        exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_alvo_short, None, {
-            'positionSide': 'SHORT',
-            'stopPrice': preco_alvo,
-            'workingType': 'MARK_PRICE'
-        })
-        exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_alvo_long, None, {
-            'positionSide': 'LONG',
-            'stopPrice': preco_alvo,
-            'workingType': 'MARK_PRICE'
-        })
-    except Exception as e:
-        print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
+    if parcial_detectada:
+        print("🚀 [FASE 2] Posicionando ordens de Alvo Final e mantendo Trava 0x0...", flush=True)
         
-    print("🛡️ [FASE 2 OK] Alvos armados! Aguardando liquidação final do ciclo...", flush=True)
-    
-    # Monitora até todas as ordens terminarem
-    contagem_sem_ordens = 0
-    while True:
-        ordens_remantes = obter_ordens_abertas()
-        if len(ordens_remantes) == 0:
-            contagem_sem_ordens += 1
-            if contagem_sem_ordens >= 3:
-                print("🏁 Operação 100% finalizada!", flush=True)
-                break
-        else:
-            contagem_sem_ordens = 0
-        time.sleep(5)
+        qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
+        qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
+        
+        try:
+            exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_alvo_short, None, {
+                'positionSide': 'SHORT',
+                'stopPrice': preco_alvo,
+                'workingType': 'MARK_PRICE'
+            })
+            exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_alvo_long, None, {
+                'positionSide': 'LONG',
+                'stopPrice': preco_alvo,
+                'workingType': 'MARK_PRICE'
+            })
+        except Exception as e:
+            print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
+            
+        print("🛡️ [FASE 2 OK] Alvos armados! Monitorando liquidação total da margem...", flush=True)
+        
+        # Monitora margem até zerar completamente
+        contagem_zerada = 0
+        while True:
+            m_long, m_short = obter_margens_posicoes()
+            if m_long <= 0.05 and m_short <= 0.05:
+                contagem_zerada += 1
+                if contagem_zerada >= 3:
+                    print(f"🏁 Operação 100% finalizada! Margem zerada (Long: ${m_long:.2f} | Short: ${m_short:.2f}).", flush=True)
+                    break
+            else:
+                contagem_zerada = 0
+            time.sleep(5)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
