@@ -27,10 +27,9 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))     # Subido para $5 para sustentar a margem livre
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))
 
-# PARAMETRIZAÇÃO MODELO PRÁTICO (Ajustado para 1.00% de teste)
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0100))     # 1.00% para teste limpo
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0100))     # 1.00%
 TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
 
 TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) 
@@ -64,14 +63,13 @@ def obter_preco_atual():
         print(f"⚠️ Erro ao consultar preço de mercado: {e}", flush=True)
         return None
 
-def obter_ids_ordens_abertas():
-    """Consulta os IDs de todas as ordens condicionais ativas no book da Binance."""
+def checar_status_ordem(ordem_id):
+    """Consulta o status exato da ordem pelo ID na Binance."""
     try:
-        ordens = exchange.fetch_open_orders(SYMBOL, params={'type': 'all'})
-        return [str(o['id']) for o in ordens]
+        ordem = exchange.fetch_order(ordem_id, SYMBOL)
+        return ordem.get('status') # 'open', 'closed', 'canceled'
     except Exception as e:
-        print(f"⚠️ Erro ao consultar ordens abertas: {e}", flush=True)
-        return []
+        return 'open'
 
 def executar_ciclo():
     print("🚀 [FASE 1] Executando entradas a mercado e armando ordens no book...", flush=True)
@@ -87,7 +85,7 @@ def executar_ciclo():
     qtd_moedas_raw = (CAPITAL_USDT * LEVERAGE) / precio_atual
     qtd_moedas = float(exchange.amount_to_precision(SYMBOL, qtd_moedas_raw))
     
-    # 1. Abertura Long/Short simultânea
+    # 1. Abertura Long/Short
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
@@ -151,28 +149,30 @@ def executar_ciclo():
     
     print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando execuções reais...", flush=True)
     
-    # Pausa de 5 segundos para o mercado assentar o spread inicial
-    time.sleep(5)
+    # Estabilização inicial obrigatória de 10 segundos
+    time.sleep(10)
     
-    # 5. Monitoramento da Fase 1 (Prioridade Total para Desaparecimento da Ordem no Book)
+    # 5. Monitoramento Fiel por Status Direto da Ordem na Binance
     lado_atingido = None
     
     while True:
-        ids_ativas = obter_ids_ordens_abertas()
+        status_alta = checar_status_ordem(id_p_alta)
+        status_baixa = checar_status_ordem(id_p_baixa)
         p_mercado = obter_preco_atual()
         
-        # 1. Checagem Principal: A ordem de parcial sumiu do book porque a Binance EXECUTOU?
-        if id_p_alta not in ids_ativas:
-            print(f"🎯 PARCIAL DE ALTA EXECUTADA NA BINANCE (Ordem sumiu do book)!", flush=True)
+        # Confirmação REAL: A ordem de parcial de ALTA fechou/preencheu na Binance
+        if status_alta in ['closed', 'filled']:
+            print(f"🎯 PARCIAL DE ALTA CONFIRMADA NA BINANCE (Status: {status_alta})!", flush=True)
             lado_atingido = 'ALTA'
             break
             
-        if id_p_baixa not in ids_ativas:
-            print(f"🎯 PARCIAL DE QUEDA EXECUTADA NA BINANCE (Ordem sumiu do book)!", flush=True)
+        # Confirmação REAL: A ordem de parcial de QUEDA fechou/preencheu na Binance
+        if status_baixa in ['closed', 'filled']:
+            print(f"🎯 PARCIAL DE QUEDA CONFIRMADA NA BINANCE (Status: {status_baixa})!", flush=True)
             lado_atingido = 'QUEDA'
             break
             
-        # 2. Checagem Secundária: Trava 0x0
+        # Checagem de segurança da Trava 0x0
         if p_mercado and (p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta):
             print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
             try:
@@ -181,11 +181,11 @@ def executar_ciclo():
                 pass
             return
             
-        time.sleep(2)
+        time.sleep(3)
     
-    # 6. FASE 2: Limpar lixo e posicionar Alvo de Repique
+    # 6. FASE 2: Cancelar ordens restantes e posicionar Alvo de Repique
     if lado_atingido:
-        print(f"🧹 Limpando ordens antigas do book para liberar margem...", flush=True)
+        print(f"🧹 Parcial confirmada. Limpando ordens do lado não atingido...", flush=True)
         try:
             exchange.cancel_all_orders(SYMBOL)
             print("✅ Book limpo com sucesso!", flush=True)
@@ -222,13 +222,16 @@ def executar_ciclo():
         except Exception as e:
             print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
             
-        # Monitora liquidação no repique
+        # Monitora o status das ordens do repique
         while True:
-            ids_ativas = obter_ids_ordens_abertas()
-            if len(ids_ativas) == 0:
-                print(f"🏁 Operação de {lado_atingido} finalizada no Repique/0x0!", flush=True)
-                break
-            time.sleep(3)
+            try:
+                ordens_ativas = exchange.fetch_open_orders(SYMBOL)
+                if len(ordens_ativas) == 0:
+                    print(f"🏁 Operação de {lado_atingido} finalizada no Repique/0x0!", flush=True)
+                    break
+            except:
+                pass
+            time.sleep(5)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
