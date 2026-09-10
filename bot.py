@@ -48,7 +48,7 @@ def executar_operacao():
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
-    # 2. Leitura do Slippage e Preço Médio Ponderado ($P_{ref}$)
+    # 2. Leitura do Slippage e Preço Médio Ponderado
     p_long = ordem_long.get('average') or precio_atual
     p_short = ordem_short.get('average') or precio_atual
     p_ref = (p_long + p_short) / 2.0
@@ -59,47 +59,40 @@ def executar_operacao():
     preco_parcial = round(p_ref * (1.0 - PARCIAL_PCT), 6)
     preco_0x0 = round(p_ref * (1.0 - TRAVA_0X0_PCT), 6)
     
-    qtd_parcial_short = round(qtd_moedas * 0.85, 1)
-    qtd_parcial_long = round(qtd_moedas * 0.30, 1)
+    qtd_parcial_short = round(qtd_moedas * 0.85, 0)
+    qtd_parcial_long = round(qtd_moedas * 0.30, 0)
+    qtd_total = round(qtd_moedas, 0)
     
     print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}", flush=True)
     print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}", flush=True)
     
-    # 4. PARCIAIS (Usa REDUCE_ONLY condicional para não falhar por lado do preço)
-    # Parcial Short: Fechamento parcial de Short (COMPRA) quando cai -> TAKE_PROFIT_MARKET
+    # 4. PARCIAIS (TAKE_PROFIT_MARKET / STOP_MARKET limpos sem reduceOnly)
     exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
-        'reduceOnly': True,
         'workingType': 'MARK_PRICE'
     })
     
-    # Parcial Long: Fechamento parcial de Long (VENDA) quando cai -> STOP_MARKET
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_parcial,
-        'reduceOnly': True,
         'workingType': 'MARK_PRICE'
     })
     
-    # 5. CLOSES TOTAIS (TRAVA 0x0 / CONDITIONAL CLOSE 100%)
-    # Fecha 100% da Posição Short ao atingir preco_0x0
-    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', None, None, {
+    # 5. TRAVA 0x0 (Fechamento total condicional)
+    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_total, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_0x0,
-        'closePosition': True,
         'workingType': 'MARK_PRICE'
     })
     
-    # Fecha 100% da Posição Long ao atingir preco_0x0
-    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', None, None, {
+    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_total, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_0x0,
-        'closePosition': True,
         'workingType': 'MARK_PRICE'
     })
     
-    print("🛡️ Operação 100% armada com Conditional Close e visível na Binance!", flush=True)
+    print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
