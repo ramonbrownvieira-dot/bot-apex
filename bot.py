@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot APEX WebSocket Ativo!", 200
+    return "Bot APEX WebSocket 0x0 Completo Ativo!", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
@@ -17,20 +17,15 @@ SYMBOL = os.getenv('SYMBOL', 'BTC/USDT')
 LEVERAGE = 10                                             
 CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))   
 
-# PARÂMETROS DA OPERAÇÃO (85/15 com Parcial de 0.50%)
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50%
+# MODO TESTE DE VELOCIDADE (PARCIAL CURTA: 0.15% E REGRA 85/15)
+PARCIAL_PCT = 0.0015                                       # 0.15% (Para disparo rápido)
 PCT_FECHAR_VENCEDOR = 0.85                                 # 85%
 PCT_FECHAR_PERDEDOR = 0.15                                 # 15%
 
-TAXA_BINANCE_PCT = 0.0020
-EXPOSICAO_LIQUIDA = PCT_FECHAR_PERDEDOR - PCT_FECHAR_VENCEDOR # -0.70
-SALDO_BRUTO_PARCIAL = (PCT_FECHAR_VENCEDOR - PCT_FECHAR_PERDEDOR) * PARCIAL_PCT
+TRAVA_0X0_PCT = 0.0030                                     # Distância da trava 0x0
+ALVO_FINAL_PCT = 0.0010                                    # Repique na metade
 
-CALC_TRAVA = PARCIAL_PCT + ((SALDO_BRUTO_PARCIAL - TAXA_BINANCE_PCT) / abs(EXPOSICAO_LIQUIDA))
-TRAVA_0X0_PCT = round(CALC_TRAVA, 6)
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)
-
-COOLDOWN_SEGUNDOS = 300
+COOLDOWN_SEGUNDOS = 120
 
 async def iniciar_exchange():
     exchange = ccxtpro.binance({
@@ -43,7 +38,6 @@ async def iniciar_exchange():
         }
     })
     
-    # Ativa o Demo Trading oficial da Binance Futures no CCXT Pro
     try:
         exchange.enable_demo_trading(True)
     except Exception as e:
@@ -52,7 +46,7 @@ async def iniciar_exchange():
     return exchange
 
 async def executar_ciclo_ws(exchange):
-    print(f"🚀 [FASE 1] Iniciando entradas no par {SYMBOL} via WebSocket...", flush=True)
+    print(f"⚡ [TESTE RÁPIDO WS] Iniciando entradas no par {SYMBOL} (Parcial 0.15%)...", flush=True)
     await exchange.load_markets()
     
     try:
@@ -68,7 +62,7 @@ async def executar_ciclo_ws(exchange):
     if qtd_moedas < 0.002:
         qtd_moedas = 0.002
 
-    # 1. Abertura das Posições Long e Short
+    # 1. Abertura Long/Short
     ordem_long = await exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = await exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
@@ -89,29 +83,37 @@ async def executar_ciclo_ws(exchange):
     qtd_parcial_perdedor = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * PCT_FECHAR_PERDEDOR))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
 
-    print(f"📌 Níveis Armados | Parcial Baixa: {p_parcial_baixa} | Parcial Alta: {p_parcial_alta}", flush=True)
+    print(f"📌 TESTE -> Parcial Queda: {p_parcial_baixa} | Parcial Alta: {p_parcial_alta}", flush=True)
 
-    # 3. Armar Ordens Condicionais
+    # 3. Armar TODAS as 6 Ordens Condicionais no Book (Parciais + Trava 0x0)
+    # Lado da Queda (3 Ordens)
     o_p_baixa = await exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_vencedor, None, {
         'positionSide': 'SHORT', 'stopPrice': p_parcial_baixa, 'workingType': 'MARK_PRICE'
     })
     await exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_perdedor, None, {
         'positionSide': 'LONG', 'stopPrice': p_parcial_baixa, 'workingType': 'MARK_PRICE'
     })
+    await exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_total, None, {
+        'positionSide': 'SHORT', 'stopPrice': p_0x0_baixa, 'workingType': 'MARK_PRICE'
+    })
     
+    # Lado da Alta (3 Ordens)
     o_p_alta = await exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'sell', qtd_parcial_perdedor, None, {
         'positionSide': 'LONG', 'stopPrice': p_parcial_alta, 'workingType': 'MARK_PRICE'
     })
     await exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_parcial_vencedor, None, {
         'positionSide': 'SHORT', 'stopPrice': p_parcial_alta, 'workingType': 'MARK_PRICE'
     })
+    await exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_total, None, {
+        'positionSide': 'SHORT', 'stopPrice': p_0x0_alta, 'workingType': 'MARK_PRICE'
+    })
 
     id_p_baixa = str(o_p_baixa.get('id'))
     id_p_alta = str(o_p_alta.get('id'))
 
-    print("⚡ [WEBSOCKET CONECTADO] Ouvindo execuções de ordens em tempo real...", flush=True)
+    print("⚡ [6 ORDENS NO BOOK] Ouvindo execuções via WebSocket Stream...", flush=True)
 
-    # 4. Escuta Ativa Instantânea via WebSocket Push Notifications
+    # 4. Escuta Ativa Instantânea via WebSocket Push
     lado_atingido = None
     while True:
         try:
@@ -122,11 +124,11 @@ async def executar_ciclo_ws(exchange):
                 
                 if status in ['closed', 'filled']:
                     if ord_id == id_p_baixa:
-                        print("🎯 [PUSH PREDITIVO WS] Parcial de QUEDA confirmada instantaneamente!", flush=True)
+                        print("🎯 [PUSH WS] Parcial de QUEDA executada na Binance!", flush=True)
                         lado_atingido = 'QUEDA'
                         break
                     elif ord_id == id_p_alta:
-                        print("🎯 [PUSH PREDITIVO WS] Parcial de ALTA confirmada instantaneamente!", flush=True)
+                        print("🎯 [PUSH WS] Parcial de ALTA executada na Binance!", flush=True)
                         lado_atingido = 'ALTA'
                         break
             if lado_atingido:
@@ -135,11 +137,12 @@ async def executar_ciclo_ws(exchange):
             print(f"⚠️ Alerta no canal WebSocket: {e}", flush=True)
             await asyncio.sleep(1)
 
-    # 5. FASE 2: Expurgar ordens antigas e armar o Repique
+    # 5. FASE 2: Expurgar ordens antigas e armar o Repique Limpo
     if lado_atingido:
-        print("🧹 Expurgando ordens antigas do book...", flush=True)
+        print("🧹 Expurgando ordens antigas do book (Close All)...", flush=True)
         try:
             await exchange.cancel_all_orders(SYMBOL)
+            print("✅ Book Limpo!", flush=True)
         except Exception as e:
             print(f"⚠️ Alerta ao limpar ordens: {e}", flush=True)
 
@@ -162,7 +165,7 @@ async def executar_ciclo_ws(exchange):
                 'positionSide': 'SHORT', 'stopPrice': p_alvo_alta, 'workingType': 'MARK_PRICE'
             })
 
-        print("🛡️ [FASE 2 OK] Repique armado com sucesso!", flush=True)
+        print("🛡️ [FASE 2 OK] Ordens do Repique armadas no book!", flush=True)
 
 async def main_loop():
     exchange = await iniciar_exchange()
