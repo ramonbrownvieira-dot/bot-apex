@@ -25,19 +25,19 @@ exchange = ccxt.binance({
 
 exchange.enable_demo_trading(True)
 
-SYMBOL = 'TUSDT'
+SYMBOL = 'BTC/USDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 2.0))     # Retornado para $2.0 por lado
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))     # US$ 5.00 por lado
 
 # -------------------------------------------------------------------
-# MODELO PRÁTICO (PARCIAL DE 0.75%)
+# MODELO PRÁTICO (PARCIAL DE 0.50% NO BTC/USDT)
 # -------------------------------------------------------------------
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0075))     # 0.75%
-TAXA_ESTIMADA_PCT = 0.0020                                 # Cobertura de taxas (0.20%)
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50%
+TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
 
-# DERIVAÇÃO MATEMÁTICA
-TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) # 1.4706%
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                         # Repique na metade (0.375%)
+# DERIVAÇÃO MATEMÁTICA RECALIBRADA
+TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) # 1.0471%
+ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                         # Repique na metade (0.25%)
 
 COOLDOWN_SEGUNDOS = 600
 
@@ -76,7 +76,7 @@ def checar_status_ordem(ordem_id):
         return 'open'
 
 def executar_ciclo():
-    print("🚀 [FASE 1] Executando entradas a mercado ($2/lado) e armando ordens...", flush=True)
+    print(f"🚀 [FASE 1] Executando entradas a mercado no par {SYMBOL} ($5/lado) e armando ordens...", flush=True)
     
     exchange.load_markets()
     
@@ -100,9 +100,9 @@ def executar_ciclo():
     p_short = obter_preco_executado_real(ordem_short.get('id'), precio_atual)
     p_ref = (p_long + p_short) / 2.0
     
-    print(f"✅ Execução Real Fills: Long {p_long:.6f} | Short {p_short:.6f} | Preço Ref PMP: {p_ref:.6f}", flush=True)
+    print(f"✅ Execução Real Fills: Long {p_long:.2f} | Short {p_short:.2f} | Preço Ref PMP: {p_ref:.2f}", flush=True)
     
-    # 3. Níveis de Preço com Parcial a 0,75% e 0x0 Real com Taxas
+    # 3. Níveis de Preço com Parcial a 0,50% e 0x0 Real com Taxas
     p_parcial_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
     p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
     p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
@@ -115,9 +115,9 @@ def executar_ciclo():
     qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📊 Configuração: Parcial {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas {TRAVA_0X0_PCT*100:.3f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
-    print(f"📌 Queda -> Parcial: {p_parcial_baixa} | 0x0 Real: {p_0x0_baixa} | Alvo Repique: {p_alvo_baixa}", flush=True)
-    print(f"📌 Alta  -> Parcial: {p_parcial_alta} | 0x0 Real: {p_0x0_alta} | Alvo Repique: {p_alvo_alta}", flush=True)
+    print(f"📊 Configuração: Parcial {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas {TRAVA_0X0_PCT*100:.4f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
+    print(f"📌 Queda -> Parcial: {p_parcial_baixa:.2f} | 0x0 Real: {p_0x0_baixa:.2f} | Alvo Repique: {p_alvo_baixa:.2f}", flush=True)
+    print(f"📌 Alta  -> Parcial: {p_parcial_alta:.2f} | 0x0 Real: {p_0x0_alta:.2f} | Alvo Repique: {p_alvo_alta:.2f}", flush=True)
     
     # 4. Posicionar Ordens Condicionais Iniciais
     # Lado da Queda
@@ -151,7 +151,7 @@ def executar_ciclo():
     id_p_baixa = str(o_p_baixa_short['id'])
     id_p_alta = str(o_p_alta_long['id'])
     
-    print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando execuções reais...", flush=True)
+    print("⏳ [FASE 1 OK] Ordens armadas no book do BTC/USDT. Monitorando execuções reais...", flush=True)
     
     time.sleep(10)
     
@@ -174,7 +174,7 @@ def executar_ciclo():
             break
             
         if p_mercado and (p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta):
-            print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
+            print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.2f}", flush=True)
             try:
                 exchange.cancel_all_orders(SYMBOL)
             except:
