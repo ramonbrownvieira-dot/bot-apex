@@ -34,9 +34,13 @@ ALVO_FINAL_PCT = 0.0800    # 8.00%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
 def obter_ordens_abertas():
-    """Retorna a lista de IDs de ordens condicionais ativas no book."""
+    """Retorna todas as ordens abertas, incluindo ordens condicionais / algo."""
     try:
-        ordens = exchange.fetch_open_orders(SYMBOL)
+        # Força o fetch de ordens de gatilho/stop no CCXT
+        ordens = exchange.fetch_open_orders(SYMBOL, params={'type': 'all'})
+        if not ordens:
+            # Fallback caso a API da Binance prefira sem parâmetros
+            ordens = exchange.fetch_open_orders(SYMBOL)
         return ordens
     except Exception as e:
         print(f"⚠️ Erro ao consultar ordens abertas: {e}", flush=True)
@@ -103,27 +107,33 @@ def executar_ciclo():
         'workingType': 'MARK_PRICE'
     })
     
-    id_parcial_short = o_parcial_short['id']
-    id_parcial_long = o_parcial_long['id']
+    id_parcial_short = str(o_parcial_short['id'])
+    id_parcial_long = str(o_parcial_long['id'])
     
     print("⏳ [FASE 1 OK] Aguardando acionamento da Parcial no mercado...", flush=True)
-    time.sleep(10)
+    time.sleep(5)
     
-    # 4. LOOP DE MONITORAMENTO POR ORDENS (Zero falso negativo)
+    # 4. LOOP DE MONITORAMENTO DAS ORDENS DE PARCIAL
+    contagem_sem_ordens = 0
     while True:
         ordens_ativas = obter_ordens_abertas()
         ids_ativas = [str(o['id']) for o in ordens_ativas]
         
-        # Se NENHUMA ordem sobrou no book, significa que bateu na Trava 0x0 total
+        # Se nenhuma ordem condicional for encontrada por 3 vezes seguidas (15s)
         if len(ids_ativas) == 0:
-            print("🏁 Posições e ordens zeradas na Trava 0x0 antes da Parcial.", flush=True)
-            return
+            contagem_sem_ordens += 1
+            if contagem_sem_ordens >= 3:
+                print("🏁 Posições e ordens zeradas na Trava 0x0 antes da Parcial.", flush=True)
+                return
+        else:
+            contagem_sem_ordens = 0
             
-        # Se pelo menos UMA das ordens de parcial sumiu, a Parcial foi executada!
-        parcial_short_executada = str(id_parcial_short) not in ids_ativas
-        parcial_long_executada = str(id_parcial_long) not in ids_ativas
+        # Verifica se alguma das ordens de Parcial foi executada pelo mercado
+        parcial_short_executada = id_parcial_short not in ids_ativas
+        parcial_long_executada = id_parcial_long not in ids_ativas
         
-        if parcial_short_executada or parcial_long_executada:
+        # Se uma das parciais foi executada (e ainda existem ordens ativas no book)
+        if (parcial_short_executada or parcial_long_executada) and len(ids_ativas) > 0:
             print("🎯 PARCIAL EXECUTADA PELO MERCADO!", flush=True)
             break
             
@@ -152,11 +162,16 @@ def executar_ciclo():
     print("🛡️ [FASE 2 OK] Alvos armados! Aguardando liquidação final do ciclo...", flush=True)
     
     # Monitora até todas as ordens terminarem
+    contagem_sem_ordens = 0
     while True:
         ordens_remantes = obter_ordens_abertas()
         if len(ordens_remantes) == 0:
-            print("🏁 Operação 100% finalizada!", flush=True)
-            break
+            contagem_sem_ordens += 1
+            if contagem_sem_ordens >= 3:
+                print("🏁 Operação 100% finalizada!", flush=True)
+                break
+        else:
+            contagem_sem_ordens = 0
         time.sleep(5)
 
 def loop_bot():
