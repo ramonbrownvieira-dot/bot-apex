@@ -27,7 +27,7 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'BTC/USDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))    # Definido para US$ 10.00 por lado
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))    # US$ 10.00 por lado
 
 # -------------------------------------------------------------------
 # MODELO PRÁTICO (PARCIAL DE 0.50% NO BTC/USDT)
@@ -35,9 +35,8 @@ CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))    # Definido para US$ 10.
 PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50%
 TAXA_ESTIMADA_PCT = 0.0020                                 # Cobertura de taxas (0.20%)
 
-# DERIVAÇÃO MATEMÁTICA RECALIBRADA
-TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) # 1.0471%
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                         # Repique na metade (0.25%)
+# DERIVAÇÃO MATEMÁTICA
+ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)               # Repique na metade (0.25%)
 
 COOLDOWN_SEGUNDOS = 600
 
@@ -101,20 +100,20 @@ def executar_ciclo():
     
     print(f"✅ Execução Real Fills: Long {p_long:.2f} | Short {p_short:.2f} | Preço Ref PMP: {p_ref:.2f}", flush=True)
     
-    # 3. Níveis de Preço com Parcial a 0,50% e 0x0 Real com Taxas
+    # 3. Níveis de Preço com Parcial a 0,50% e Trava 0x0 Ajustada com Desconto/Acréscimo de Taxa
     p_parcial_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
-    p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
+    p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - (PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT)))
     p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
     
     p_parcial_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + PARCIAL_PCT)))
-    p_0x0_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + TRAVA_0X0_PCT)))
+    p_0x0_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + (PARCIAL_PCT * 1.6941) - TAXA_ESTIMADA_PCT)))
     p_alvo_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + ALVO_FINAL_PCT)))
     
     qtd_parcial_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.85))
     qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📊 Configuração: Parcial {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas {TRAVA_0X0_PCT*100:.4f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
+    print(f"📊 Configuração: Parcial {PARCIAL_PCT*100:.2f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
     print(f"📌 Queda -> Parcial: {p_parcial_baixa:.2f} | 0x0 Real: {p_0x0_baixa:.2f} | Alvo Repique: {p_alvo_baixa:.2f}", flush=True)
     print(f"📌 Alta  -> Parcial: {p_parcial_alta:.2f} | 0x0 Real: {p_0x0_alta:.2f} | Alvo Repique: {p_alvo_alta:.2f}", flush=True)
     
