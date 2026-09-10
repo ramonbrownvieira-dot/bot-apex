@@ -27,13 +27,13 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'BTC/USDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))     # US$ 5.00 por lado
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 10.0))    # Definido para US$ 10.00 por lado
 
 # -------------------------------------------------------------------
 # MODELO PRÁTICO (PARCIAL DE 0.50% NO BTC/USDT)
 # -------------------------------------------------------------------
 PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50%
-TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
+TAXA_ESTIMADA_PCT = 0.0020                                 # Cobertura de taxas (0.20%)
 
 # DERIVAÇÃO MATEMÁTICA RECALIBRADA
 TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) # 1.0471%
@@ -42,7 +42,6 @@ ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                         # Repique n
 COOLDOWN_SEGUNDOS = 600
 
 def obter_preco_executado_real(ordem_id, preco_fallback):
-    """Consulta os fills de trade na Binance para calcular o PMP real."""
     if not ordem_id:
         return preco_fallback
 
@@ -76,7 +75,7 @@ def checar_status_ordem(ordem_id):
         return 'open'
 
 def executar_ciclo():
-    print(f"🚀 [FASE 1] Executando entradas a mercado no par {SYMBOL} ($5/lado) e armando ordens...", flush=True)
+    print(f"🚀 [FASE 1] Executando entradas a mercado no par {SYMBOL} ($10/lado) e armando ordens...", flush=True)
     
     exchange.load_markets()
     
