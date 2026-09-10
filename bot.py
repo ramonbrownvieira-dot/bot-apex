@@ -27,24 +27,22 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = 2.0         # $2 por lado
+CAPITAL_USDT = 2.0         # Pode ser alterado para qualquer valor (ex: 10, 50, 100)
 PARCIAL_PCT = 0.0340       # 3.40%
 TRAVA_0X0_PCT = 0.0576     # 5.76%
 ALVO_FINAL_PCT = 0.0800    # 8.00%
-COOLDOWN_SEGUNDOS = 600    # 10 minutos
+COOLDOWN_SEGUNDOS = 600    # 10 minutos (após fechamento total)
 
 def obter_margens_posicoes():
-    """Lê diretamente a margem alocada (initialMargin / positionInitialMargin) nas pontas Long e Short."""
+    """Lê a margem alocada nas posições Long e Short."""
     margin_long, margin_short = 0.0, 0.0
     try:
         positions = exchange.fetch_positions([SYMBOL])
         for pos in positions:
             if pos['symbol'] == SYMBOL:
                 side = pos.get('side') or pos.get('info', {}).get('positionSide')
-                # Tenta capturar a margem usada na posição
                 initial_margin = float(pos.get('initialMargin', 0) or pos.get('info', {}).get('positionInitialMargin', 0) or 0)
                 
-                # Caso a API traga contrato/notional, calcula margem aproximada = notional / leverage
                 if initial_margin == 0:
                     notional = abs(float(pos.get('notional', 0) or pos.get('info', {}).get('notional', 0) or 0))
                     initial_margin = notional / LEVERAGE
@@ -118,39 +116,54 @@ def executar_ciclo():
         'workingType': 'MARK_PRICE'
     })
     
-    print("⏳ [FASE 1 OK] Posição aberta. Monitorando equivalência de margem...", flush=True)
-    time.sleep(10)
+    print("⏳ [FASE 1 OK] Posições armadas. Aguardando estabilização do cache da API...", flush=True)
     
-    # 4. MONITORAMENTO FASE 1 (Comparação de Margem)
+    # Aguarda o cache registrar a margem na API
+    time.sleep(30)
+    
+    # Captura a margem inicial combinada de referência
+    m_long_ini, m_short_ini = obter_margens_posicoes()
+    margem_inicial_total = m_long_ini + m_short_ini
+    
+    # Prevenção caso o retorno de margem venha zerado por instabilidade da API
+    if margem_inicial_total <= 0:
+        margem_inicial_total = CAPITAL_USDT * 2.0
+        
+    print(f"👀 [MONITORAMENTO] Margem Inicial Registrada: ${margem_inicial_total:.2f}. Monitorando percentuais...", flush=True)
+    
+    # 4. MONITORAMENTO PERCENTUAL DA FASE 1
     parcial_detectada = False
-    contagem_zerada = 0
+    confirmacoes_zerado = 0
     
     while True:
         m_long, m_short = obter_margens_posicoes()
+        margem_atual_total = m_long + m_short
         
-        # Inexistente: Ambas as margens zeradas
-        if m_long <= 0.05 and m_short <= 0.05:
-            contagem_zerada += 1
-            if contagem_zerada >= 3:
-                print(f"🏁 Margens zeradas (Long: ${m_long:.2f} | Short: ${m_short:.2f}). Trava 0x0 executada antes da Parcial.", flush=True)
+        # Posição zerada: Margem atual representa menos de 2% da margem inicial
+        if margem_atual_total <= (margem_inicial_total * 0.02):
+            confirmacoes_zerado += 1
+            if confirmacoes_zerado >= 3:
+                print(f"🏁 Margem Zerada (Atual: ${margem_atual_total:.2f} / Inicial: ${margem_inicial_total:.2f}). Trava 0x0 executada antes da Parcial.", flush=True)
                 return
         else:
-            contagem_zerada = 0
+            confirmacoes_zerado = 0
             
-            # Muito distantes: Desequilíbrio claro de margem por execução de Parcial
-            diferenca_margem = abs(m_long - m_short)
+            # Cálculo do desequilíbrio entre as pontas Long e Short
+            diferenca_relativa = abs(m_long - m_short) / max((m_long + m_short), 0.001)
             
-            # Se a diferença de margem for maior que $0.50 (sinal de parcial executada)
-            if diferenca_margem >= 0.50:
-                print(f"🎯 PARCIAL EXECUTADA! Margem Long: ${m_long:.2f} | Margem Short: ${m_short:.2f} (Dif: ${diferenca_margem:.2f})", flush=True)
+            # Detecta parcial se:
+            # 1. A margem total caiu para menos de 75% da margem inicial OU
+            # 2. O desequilíbrio entre as pontas Long e Short for maior que 25%
+            if (margem_atual_total <= (margem_inicial_total * 0.75)) or (diferenca_relativa >= 0.25):
+                print(f"🎯 PARCIAL EXECUTADA! Margem Atual: ${margem_atual_total:.2f} (Inicial: ${margem_inicial_total:.2f} | Desequilíbrio: {diferenca_relativa*100:.1f}%)", flush=True)
                 parcial_detectada = True
                 break
                 
         time.sleep(5)
     
-    # 5. FASE 2: Posicionar Alvo Final para a posição remanescente
+    # 5. FASE 2: Posicionar Alvo Final para qualquer valor de capital
     if parcial_detectada:
-        print("🚀 [FASE 2] Posicionando ordens de Alvo Final e mantendo Trava 0x0...", flush=True)
+        print("🚀 [FASE 2] Posicionando ordens de Alvo Final na Binance...", flush=True)
         
         qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
         qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
@@ -166,22 +179,21 @@ def executar_ciclo():
                 'stopPrice': preco_alvo,
                 'workingType': 'MARK_PRICE'
             })
+            print("🛡️ [FASE 2 OK] Alvos finais armados no book!", flush=True)
         except Exception as e:
             print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
             
-        print("🛡️ [FASE 2 OK] Alvos armados! Monitorando liquidação total da margem...", flush=True)
-        
-        # Monitora margem até zerar completamente
-        contagem_zerada = 0
+        # Monitora até o encerramento total da margem
+        confirmacoes_zerado = 0
         while True:
             m_long, m_short = obter_margens_posicoes()
-            if m_long <= 0.05 and m_short <= 0.05:
-                contagem_zerada += 1
-                if contagem_zerada >= 3:
-                    print(f"🏁 Operação 100% finalizada! Margem zerada (Long: ${m_long:.2f} | Short: ${m_short:.2f}).", flush=True)
+            if (m_long + m_short) <= (margem_inicial_total * 0.02):
+                confirmacoes_zerado += 1
+                if confirmacoes_zerado >= 3:
+                    print("🏁 Operação 100% finalizada com Alvo! Margem zerada.", flush=True)
                     break
             else:
-                contagem_zerada = 0
+                confirmacoes_zerado = 0
             time.sleep(5)
 
 def loop_bot():
@@ -189,7 +201,7 @@ def loop_bot():
     while True:
         try:
             executar_ciclo()
-            print(f"⏳ Iniciando Cooldown de {COOLDOWN_SEGUNDOS/60} minutos para o próximo ciclo...\n", flush=True)
+            print(f"⏳ Operação concluída. Aguardando Cooldown de {COOLDOWN_SEGUNDOS/60} minutos...\n", flush=True)
             time.sleep(COOLDOWN_SEGUNDOS)
         except Exception as e:
             print(f"⚠️ Erro no ciclo: {e}", flush=True)
