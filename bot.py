@@ -27,17 +27,22 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 2.0))     # Retornado para $2.0 por lado
 
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0100))     # 1.00%
-TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
+# -------------------------------------------------------------------
+# MODELO PRÁTICO (PARCIAL DE 0.75%)
+# -------------------------------------------------------------------
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0075))     # 0.75%
+TAXA_ESTIMADA_PCT = 0.0020                                 # Cobertura de taxas (0.20%)
 
-TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) 
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                          
+# DERIVAÇÃO MATEMÁTICA
+TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) # 1.4706%
+ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                         # Repique na metade (0.375%)
 
 COOLDOWN_SEGUNDOS = 600
 
 def obter_preco_executado_real(ordem_id, preco_fallback):
+    """Consulta os fills de trade na Binance para calcular o PMP real."""
     if not ordem_id:
         return preco_fallback
 
@@ -64,15 +69,14 @@ def obter_preco_atual():
         return None
 
 def checar_status_ordem(ordem_id):
-    """Consulta o status exato da ordem pelo ID na Binance."""
     try:
         ordem = exchange.fetch_order(ordem_id, SYMBOL)
-        return ordem.get('status') # 'open', 'closed', 'canceled'
+        return ordem.get('status')
     except Exception as e:
         return 'open'
 
 def executar_ciclo():
-    print("🚀 [FASE 1] Executando entradas a mercado e armando ordens no book...", flush=True)
+    print("🚀 [FASE 1] Executando entradas a mercado ($2/lado) e armando ordens...", flush=True)
     
     exchange.load_markets()
     
@@ -98,7 +102,7 @@ def executar_ciclo():
     
     print(f"✅ Execução Real Fills: Long {p_long:.6f} | Short {p_short:.6f} | Preço Ref PMP: {p_ref:.6f}", flush=True)
     
-    # 3. Níveis de Preço
+    # 3. Níveis de Preço com Parcial a 0,75% e 0x0 Real com Taxas
     p_parcial_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
     p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
     p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
@@ -111,11 +115,11 @@ def executar_ciclo():
     qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📊 Parcial: {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas: {TRAVA_0X0_PCT*100:.2f}% | Alvo Repique: {ALVO_FINAL_PCT*100:.3f}%", flush=True)
-    print(f"📌 Queda -> Parcial: {p_parcial_baixa} | 0x0: {p_0x0_baixa} | Alvo Repique: {p_alvo_baixa}", flush=True)
-    print(f"📌 Alta  -> Parcial: {p_parcial_alta} | 0x0: {p_0x0_alta} | Alvo Repique: {p_alvo_alta}", flush=True)
+    print(f"📊 Configuração: Parcial {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas {TRAVA_0X0_PCT*100:.3f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
+    print(f"📌 Queda -> Parcial: {p_parcial_baixa} | 0x0 Real: {p_0x0_baixa} | Alvo Repique: {p_alvo_baixa}", flush=True)
+    print(f"📌 Alta  -> Parcial: {p_parcial_alta} | 0x0 Real: {p_0x0_alta} | Alvo Repique: {p_alvo_alta}", flush=True)
     
-    # 4. Posicionar Ordens Condicionais
+    # 4. Posicionar Ordens Condicionais Iniciais
     # Lado da Queda
     o_p_baixa_short = exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT', 'stopPrice': p_parcial_baixa, 'workingType': 'MARK_PRICE'
@@ -149,10 +153,9 @@ def executar_ciclo():
     
     print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando execuções reais...", flush=True)
     
-    # Estabilização inicial obrigatória de 10 segundos
     time.sleep(10)
     
-    # 5. Monitoramento Fiel por Status Direto da Ordem na Binance
+    # 5. Monitoramento Fiel do Status das Parciais
     lado_atingido = None
     
     while True:
@@ -160,19 +163,16 @@ def executar_ciclo():
         status_baixa = checar_status_ordem(id_p_baixa)
         p_mercado = obter_preco_atual()
         
-        # Confirmação REAL: A ordem de parcial de ALTA fechou/preencheu na Binance
         if status_alta in ['closed', 'filled']:
-            print(f"🎯 PARCIAL DE ALTA CONFIRMADA NA BINANCE (Status: {status_alta})!", flush=True)
+            print(f"🎯 PARCIAL DE ALTA CONFIRMADA NA BINANCE!", flush=True)
             lado_atingido = 'ALTA'
             break
             
-        # Confirmação REAL: A ordem de parcial de QUEDA fechou/preencheu na Binance
         if status_baixa in ['closed', 'filled']:
-            print(f"🎯 PARCIAL DE QUEDA CONFIRMADA NA BINANCE (Status: {status_baixa})!", flush=True)
+            print(f"🎯 PARCIAL DE QUEDA CONFIRMADA NA BINANCE!", flush=True)
             lado_atingido = 'QUEDA'
             break
             
-        # Checagem de segurança da Trava 0x0
         if p_mercado and (p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta):
             print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
             try:
@@ -183,12 +183,12 @@ def executar_ciclo():
             
         time.sleep(3)
     
-    # 6. FASE 2: Cancelar ordens restantes e posicionar Alvo de Repique
+    # 6. FASE 2: Expurgar ordens lixo e armar o Repique Limpo
     if lado_atingido:
-        print(f"🧹 Parcial confirmada. Limpando ordens do lado não atingido...", flush=True)
+        print(f"🧹 Expurgando ordens antigas do book (Close All Lixo)...", flush=True)
         try:
             exchange.cancel_all_orders(SYMBOL)
-            print("✅ Book limpo com sucesso!", flush=True)
+            print("✅ Book totalmente limpo!", flush=True)
         except Exception as e:
             print(f"⚠️ Alerta ao cancelar ordens antigas: {e}", flush=True)
             
@@ -222,7 +222,6 @@ def executar_ciclo():
         except Exception as e:
             print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
             
-        # Monitora o status das ordens do repique
         while True:
             try:
                 ordens_ativas = exchange.fetch_open_orders(SYMBOL)
