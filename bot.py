@@ -13,7 +13,7 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# Inicializa API com Variáveis de Ambiente
+# Configuração da API com Variáveis de Ambiente
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
@@ -30,7 +30,7 @@ TRAVA_0X0_PCT = 0.0576     # 5.76%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
 def executar_operacao():
-    print("🚀 [PASSO 1] Executando ordens reais na Binance Demo...")
+    print("🚀 [PASSO 1] Executando ordens reais na Binance Demo...", flush=True)
     exchange.set_leverage(LEVERAGE, SYMBOL)
     
     ticker = exchange.fetch_ticker(SYMBOL)
@@ -46,7 +46,7 @@ def executar_operacao():
     p_short = ordem_short['average'] if ordem_short['average'] else precio_atual
     p_ref = (p_long + p_short) / 2.0
     
-    print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}")
+    print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}", flush=True)
     
     # 3. Cálculos Dinâmicos
     preco_parcial = p_ref * (1.0 - PARCIAL_PCT)
@@ -55,10 +55,10 @@ def executar_operacao():
     qtd_parcial_short = qtd_moedas * 0.85
     qtd_parcial_long = qtd_moedas * 0.30
     
-    print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}")
-    print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}")
+    print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}", flush=True)
+    print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}", flush=True)
     
-    # 4. Envio de Ordens Condicionais
+    # 4. Envio de Ordens Condicionais Nativas
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
@@ -82,19 +82,23 @@ def executar_operacao():
         'closePosition': True
     })
     
-    print("🛡️ Operação 100% armada e visível na Binance!")
+    print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
 
 def loop_bot():
-    print("🤖 Bot APEX rodando na nuvem...")
+    print("🤖 Bot APEX iniciado na nuvem...", flush=True)
     while True:
         try:
             executar_operacao()
-            print(f"⏳ Aguardando {COOLDOWN_SEGUNDOS/60} minutos para o próximo ciclo...\n")
+            print(f"⏳ Aguardando {COOLDOWN_SEGUNDOS/60} minutos para o próximo ciclo...\n", flush=True)
             time.sleep(COOLDOWN_SEGUNDOS)
         except Exception as e:
-            print(f"⚠️ Erro no ciclo: {e}")
+            print(f"⚠️ Erro no ciclo: {e}", flush=True)
             time.sleep(30)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
-    loop_bot()
+    # Dispara a thread do robô primeiro
+    t = threading.Thread(target=loop_bot, daemon=True)
+    t.start()
+    
+    # Inicia o servidor web Flask
+    run_flask()
