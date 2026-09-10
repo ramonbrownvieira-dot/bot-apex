@@ -13,7 +13,6 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# Inicialização com o padrão oficial do CCXT para Binance Demo Trading
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
@@ -24,7 +23,6 @@ exchange = ccxt.binance({
     }
 })
 
-# Ativa o modo Demo Trading oficial do CCXT
 exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
@@ -50,7 +48,7 @@ def executar_operacao():
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
-    # 2. Leitura do Slippage e Preço Médio Ponderado
+    # 2. Leitura do Slippage e Preço Médio Ponderado ($P_{ref}$)
     p_long = ordem_long.get('average') or precio_atual
     p_short = ordem_short.get('average') or precio_atual
     p_ref = (p_long + p_short) / 2.0
@@ -58,41 +56,50 @@ def executar_operacao():
     print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}", flush=True)
     
     # 3. Cálculos Dinâmicos
-    preco_parcial = p_ref * (1.0 - PARCIAL_PCT)
-    preco_0x0 = p_ref * (1.0 - TRAVA_0X0_PCT)
+    preco_parcial = round(p_ref * (1.0 - PARCIAL_PCT), 6)
+    preco_0x0 = round(p_ref * (1.0 - TRAVA_0X0_PCT), 6)
     
-    qtd_parcial_short = qtd_moedas * 0.85
-    qtd_parcial_long = qtd_moedas * 0.30
+    qtd_parcial_short = round(qtd_moedas * 0.85, 1)
+    qtd_parcial_long = round(qtd_moedas * 0.30, 1)
     
     print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}", flush=True)
     print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}", flush=True)
     
-    # 4. Envio de Ordens Condicionais
-    exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_parcial_short, None, {
+    # 4. PARCIAIS (Usa REDUCE_ONLY condicional para não falhar por lado do preço)
+    # Parcial Short: Fechamento parcial de Short (COMPRA) quando cai -> TAKE_PROFIT_MARKET
+    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
-        'closePosition': False
+        'reduceOnly': True,
+        'workingType': 'MARK_PRICE'
     })
     
+    # Parcial Long: Fechamento parcial de Long (VENDA) quando cai -> STOP_MARKET
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_parcial,
-        'closePosition': False
+        'reduceOnly': True,
+        'workingType': 'MARK_PRICE'
     })
     
-    exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_moedas, None, {
+    # 5. CLOSES TOTAIS (TRAVA 0x0 / CONDITIONAL CLOSE 100%)
+    # Fecha 100% da Posição Short ao atingir preco_0x0
+    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', None, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_0x0,
-        'closePosition': True
+        'closePosition': True,
+        'workingType': 'MARK_PRICE'
     })
     
-    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_moedas, None, {
+    # Fecha 100% da Posição Long ao atingir preco_0x0
+    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', None, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_0x0,
-        'closePosition': True
+        'closePosition': True,
+        'workingType': 'MARK_PRICE'
     })
     
-    print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
+    print("🛡️ Operação 100% armada com Conditional Close e visível na Binance!", flush=True)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
