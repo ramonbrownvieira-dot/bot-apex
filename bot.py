@@ -42,7 +42,13 @@ async def iniciar_exchange():
             'adjustForTimeDifference': True
         }
     })
-    exchange.set_sandbox_mode(True) # Demo Trading
+    
+    # Ativa o Demo Trading oficial da Binance Futures no CCXT Pro
+    try:
+        exchange.enable_demo_trading(True)
+    except Exception as e:
+        print(f"⚠️ Nota Demo Trading: {e}", flush=True)
+
     return exchange
 
 async def executar_ciclo_ws(exchange):
@@ -109,7 +115,6 @@ async def executar_ciclo_ws(exchange):
     lado_atingido = None
     while True:
         try:
-            # O bot fica suspenso aqui SEM gastar CPU/API até a Binance mandar um Push
             orders = await exchange.watch_orders(SYMBOL)
             for order in orders:
                 ord_id = str(order.get('id'))
