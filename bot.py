@@ -30,12 +30,23 @@ LEVERAGE = 10
 CAPITAL_USDT = 2.0         # $2 por lado
 PARCIAL_PCT = 0.0340       # 3.40%
 TRAVA_0X0_PCT = 0.0576     # 5.76%
-COOLDOWN_SEGUNDOS = 600    # 10 minutos
+COOLDOWN_SEGUNDOS = 600    # 10 minutos (após fechamento total)
+
+def tem_posicoes_ativas():
+    """Retorna True se houver posição Long ou Short aberta para o símbolo."""
+    try:
+        positions = exchange.fetch_positions([SYMBOL])
+        for pos in positions:
+            contracts = float(pos.get('contracts', 0) or 0)
+            if pos['symbol'] == SYMBOL and contracts > 0:
+                return True
+    except Exception as e:
+        print(f"⚠️ Erro ao verificar posições: {e}", flush=True)
+    return False
 
 def executar_operacao():
     print("🚀 [PASSO 1] Executando ordens reais na Binance Demo...", flush=True)
     
-    # Carrega regras de precisão do par no mercado da Binance
     exchange.load_markets()
     
     try:
@@ -46,7 +57,6 @@ def executar_operacao():
     ticker = exchange.fetch_ticker(SYMBOL)
     precio_atual = ticker['last']
     qtd_moedas_raw = (CAPITAL_USDT * LEVERAGE) / precio_atual
-    
     qtd_moedas = float(exchange.amount_to_precision(SYMBOL, qtd_moedas_raw))
     
     # 1. Abertura a Mercado em Hedge Mode
@@ -97,18 +107,28 @@ def executar_operacao():
         'workingType': 'MARK_PRICE'
     })
     
-    print("🛡️ Operação 100% armada com precisão exata da Binance!", flush=True)
+    print("🛡️ Operação 100% armada! Iniciando monitoramento da posição...", flush=True)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
     while True:
         try:
-            executar_operacao()
-            print(f"⏳ Aguardando {COOLDOWN_SEGUNDOS/60} minutos para o próximo ciclo...\n", flush=True)
+            # 1. Se não houver posições abertas, abre novo ciclo
+            if not tem_posicoes_ativas():
+                executar_operacao()
+            
+            # 2. Aguarda e monitora até todas as posições serem totalmente fechadas
+            while tem_posicoes_ativas():
+                time.sleep(5)
+            
+            # 3. Posições zeradas -> Aplica o Cooldown de 10 minutos
+            print("🏁 Todas as posições do ciclo foram encerradas!", flush=True)
+            print(f"⏳ Iniciando Cooldown de {COOLDOWN_SEGUNDOS/60} minutos para a próxima operação...\n", flush=True)
             time.sleep(COOLDOWN_SEGUNDOS)
+            
         except Exception as e:
             print(f"⚠️ Erro no ciclo: {e}", flush=True)
-            time.sleep(30)
+            time.sleep(10)
 
 if __name__ == '__main__':
     t = threading.Thread(target=loop_bot, daemon=True)
