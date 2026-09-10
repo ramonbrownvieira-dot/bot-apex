@@ -33,22 +33,14 @@ TRAVA_0X0_PCT = 0.0576     # 5.76%
 ALVO_FINAL_PCT = 0.0800    # 8.00%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
-def obter_quantidade_posicoes():
-    """Retorna as quantidades atuais das posições [Long, Short]."""
-    long_qty, short_qty = 0.0, 0.0
+def obter_ordens_abertas():
+    """Retorna a lista de IDs de ordens condicionais ativas no book."""
     try:
-        positions = exchange.fetch_positions([SYMBOL])
-        for pos in positions:
-            side = pos.get('side') or pos.get('info', {}).get('positionSide')
-            contracts = float(pos.get('contracts', 0) or 0)
-            if pos['symbol'] == SYMBOL:
-                if side == 'LONG' or pos.get('positionSide') == 'LONG':
-                    long_qty = contracts
-                elif side == 'SHORT' or pos.get('positionSide') == 'SHORT':
-                    short_qty = contracts
+        ordens = exchange.fetch_open_orders(SYMBOL)
+        return ordens
     except Exception as e:
-        print(f"⚠️ Erro ao consultar posições: {e}", flush=True)
-    return long_qty, short_qty
+        print(f"⚠️ Erro ao consultar ordens abertas: {e}", flush=True)
+        return []
 
 def executar_ciclo():
     print("🚀 [FASE 1] Executando entradas e posicionando Parciais e Trava 0x0...", flush=True)
@@ -87,13 +79,13 @@ def executar_ciclo():
     print(f"📌 Parcial em: {preco_parcial} | Trava 0x0 em: {preco_0x0}", flush=True)
     
     # 3. Armar Parciais e Trava 0x0 Inicial
-    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
+    o_parcial_short = exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
         'workingType': 'MARK_PRICE'
     })
     
-    exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
+    o_parcial_long = exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_parcial,
         'workingType': 'MARK_PRICE'
@@ -111,68 +103,61 @@ def executar_ciclo():
         'workingType': 'MARK_PRICE'
     })
     
-    print("⏳ [FASE 1 OK] Aguardando o mercado atingir a Parcial...", flush=True)
+    id_parcial_short = o_parcial_short['id']
+    id_parcial_long = o_parcial_long['id']
     
-    # Pausa estritamente necessária para a API propagar as posições abertas
+    print("⏳ [FASE 1 OK] Aguardando acionamento da Parcial no mercado...", flush=True)
     time.sleep(10)
     
-    # 4. LOOP DE MONITORAMENTO DA FASE 1 (Aguardando Parcial)
-    parcial_executada = False
-    contagem_zerada = 0
-    
+    # 4. LOOP DE MONITORAMENTO POR ORDENS (Zero falso negativo)
     while True:
-        l_qty, s_qty = obter_quantidade_posicoes()
+        ordens_ativas = obter_ordens_abertas()
+        ids_ativas = [str(o['id']) for o in ordens_ativas]
         
-        # Se zerar, exige 3 confirmações seguidas (15s) para garantir que não é falso negativo da API
-        if l_qty == 0 and s_qty == 0:
-            contagem_zerada += 1
-            if contagem_zerada >= 3:
-                print("🏁 Posições encerradas na Trava 0x0 antes da Parcial.", flush=True)
-                return
-        else:
-            contagem_zerada = 0 # Reseta se ler posição ativa
+        # Se NENHUMA ordem sobrou no book, significa que bateu na Trava 0x0 total
+        if len(ids_ativas) == 0:
+            print("🏁 Posições e ordens zeradas na Trava 0x0 antes da Parcial.", flush=True)
+            return
             
-        # Detecta que a parcial foi executada (quantidade diminuiu)
-        if (s_qty < qtd_total or l_qty < qtd_total) and (l_qty > 0 or s_qty > 0):
-            print("🎯 PARCIAL EXECUTADA COM SUCESSO!", flush=True)
-            parcial_executada = True
+        # Se pelo menos UMA das ordens de parcial sumiu, a Parcial foi executada!
+        parcial_short_executada = str(id_parcial_short) not in ids_ativas
+        parcial_long_executada = str(id_parcial_long) not in ids_ativas
+        
+        if parcial_short_executada or parcial_long_executada:
+            print("🎯 PARCIAL EXECUTADA PELO MERCADO!", flush=True)
             break
             
         time.sleep(5)
     
-    # 5. FASE 2: Posicionar Ordens de Alvo Final Pós-Parcial
-    if parcial_executada:
-        print("🚀 [FASE 2] Posicionando ordens de Alvo Final e mantendo Trava 0x0...", flush=True)
+    # 5. FASE 2: Posicionar Alvo Final para a posição remanescente
+    print("🚀 [FASE 2] Posicionando ordens de Alvo Final e mantendo Trava 0x0...", flush=True)
+    
+    qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
+    qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
+    
+    try:
+        exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_alvo_short, None, {
+            'positionSide': 'SHORT',
+            'stopPrice': preco_alvo,
+            'workingType': 'MARK_PRICE'
+        })
+        exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_alvo_long, None, {
+            'positionSide': 'LONG',
+            'stopPrice': preco_alvo,
+            'workingType': 'MARK_PRICE'
+        })
+    except Exception as e:
+        print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
         
-        l_restante, s_restante = obter_quantidade_posicoes()
-        
-        if s_restante > 0:
-            exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', s_restante, None, {
-                'positionSide': 'SHORT',
-                'stopPrice': preco_alvo,
-                'workingType': 'MARK_PRICE'
-            })
-        if l_restante > 0:
-            exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', l_restante, None, {
-                'positionSide': 'LONG',
-                'stopPrice': preco_alvo,
-                'workingType': 'MARK_PRICE'
-            })
-            
-        print("🛡️ [FASE 2 OK] Alvos armados! Aguardando finalização do ciclo...", flush=True)
-        
-        # Monitora com confirmação até o encerramento total
-        contagem_zerada = 0
-        while True:
-            l_qty, s_qty = obter_quantidade_posicoes()
-            if l_qty == 0 and s_qty == 0:
-                contagem_zerada += 1
-                if contagem_zerada >= 3:
-                    print("🏁 Operação 100% finalizada!", flush=True)
-                    break
-            else:
-                contagem_zerada = 0
-            time.sleep(5)
+    print("🛡️ [FASE 2 OK] Alvos armados! Aguardando liquidação final do ciclo...", flush=True)
+    
+    # Monitora até todas as ordens terminarem
+    while True:
+        ordens_remantes = obter_ordens_abertas()
+        if len(ordens_remantes) == 0:
+            print("🏁 Operação 100% finalizada!", flush=True)
+            break
+        time.sleep(5)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
