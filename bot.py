@@ -13,14 +13,23 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# Configuração da API com Variáveis de Ambiente
+# Inicialização atualizada para a nova API Demo Trading Futures da Binance
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
     'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
+    'options': {
+        'defaultType': 'future',
+        'adjustForTimeDifference': True
+    },
+    'urls': {
+        'api': {
+            'fapiPublic': 'https://demo.binance.com/fapi/v1',
+            'fapiPrivate': 'https://demo.binance.com/fapi/v1',
+            'fapiPrivateV2': 'https://demo.binance.com/fapi/v2'
+        }
+    }
 })
-exchange.set_sandbox_mode(True)  # Demo Binance Testnet
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
@@ -31,19 +40,23 @@ COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
 def executar_operacao():
     print("🚀 [PASSO 1] Executando ordens reais na Binance Demo...", flush=True)
-    exchange.set_leverage(LEVERAGE, SYMBOL)
+    
+    try:
+        exchange.set_leverage(LEVERAGE, SYMBOL)
+    except Exception as e:
+        print(f"⚠️ Alerta ao definir alavancagem: {e}", flush=True)
     
     ticker = exchange.fetch_ticker(SYMBOL)
     precio_atual = ticker['last']
     qtd_moedas = (CAPITAL_USDT * LEVERAGE) / precio_atual
     
-    # 1. Abertura a Mercado em Hedge
+    # 1. Abertura a Mercado em Hedge Mode
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
     # 2. Leitura do Slippage e Preço Médio Ponderado
-    p_long = ordem_long['average'] if ordem_long['average'] else precio_atual
-    p_short = ordem_short['average'] if ordem_short['average'] else precio_atual
+    p_long = ordem_long.get('average') or precio_atual
+    p_short = ordem_short.get('average') or precio_atual
     p_ref = (p_long + p_short) / 2.0
     
     print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}", flush=True)
@@ -58,7 +71,7 @@ def executar_operacao():
     print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}", flush=True)
     print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}", flush=True)
     
-    # 4. Envio de Ordens Condicionais Nativas
+    # 4. Envio de Ordens Condicionais
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
@@ -76,6 +89,7 @@ def executar_operacao():
         'stopPrice': preco_0x0,
         'closePosition': True
     })
+    
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_moedas, None, {
         'positionSide': 'LONG',
         'stopPrice': preco_0x0,
@@ -85,7 +99,7 @@ def executar_operacao():
     print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
 
 def loop_bot():
-    print("🤖 Bot APEX iniciado na nuvem...", flush=True)
+    print("🤖 Bot APEX iniciado na nuvem (Europa)...", flush=True)
     while True:
         try:
             executar_operacao()
@@ -96,9 +110,6 @@ def loop_bot():
             time.sleep(30)
 
 if __name__ == '__main__':
-    # Dispara a thread do robô primeiro
     t = threading.Thread(target=loop_bot, daemon=True)
     t.start()
-    
-    # Inicia o servidor web Flask
     run_flask()
