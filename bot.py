@@ -35,6 +35,9 @@ COOLDOWN_SEGUNDOS = 600    # 10 minutos
 def executar_operacao():
     print("🚀 [PASSO 1] Executando ordens reais na Binance Demo...", flush=True)
     
+    # Carrega regras de precisão do par no mercado da Binance
+    exchange.load_markets()
+    
     try:
         exchange.set_leverage(LEVERAGE, SYMBOL)
     except Exception as e:
@@ -42,31 +45,33 @@ def executar_operacao():
     
     ticker = exchange.fetch_ticker(SYMBOL)
     precio_atual = ticker['last']
-    qtd_moedas = (CAPITAL_USDT * LEVERAGE) / precio_atual
+    qtd_moedas_raw = (CAPITAL_USDT * LEVERAGE) / precio_atual
+    
+    qtd_moedas = float(exchange.amount_to_precision(SYMBOL, qtd_moedas_raw))
     
     # 1. Abertura a Mercado em Hedge Mode
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
-    # 2. Leitura do Slippage e Preço Médio Ponderado
+    # 2. Leitura do Preço Médio Ponderado ($P_{ref}$)
     p_long = ordem_long.get('average') or precio_atual
     p_short = ordem_short.get('average') or precio_atual
     p_ref = (p_long + p_short) / 2.0
     
     print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}", flush=True)
     
-    # 3. Cálculos Dinâmicos
-    preco_parcial = round(p_ref * (1.0 - PARCIAL_PCT), 6)
-    preco_0x0 = round(p_ref * (1.0 - TRAVA_0X0_PCT), 6)
+    # 3. Cálculos Dinâmicos com Precisão Nativa do Par
+    preco_parcial = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
+    preco_0x0 = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
     
-    qtd_parcial_short = round(qtd_moedas * 0.85, 0)
-    qtd_parcial_long = round(qtd_moedas * 0.30, 0)
-    qtd_total = round(qtd_moedas, 0)
+    qtd_parcial_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.85))
+    qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
+    qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📌 Posicionando Parcial em: {preco_parcial:.6f}", flush=True)
-    print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0:.6f}", flush=True)
+    print(f"📌 Posicionando Parcial em: {preco_parcial}", flush=True)
+    print(f"🛡️ Posicionando Trava 0x0 em: {preco_0x0}", flush=True)
     
-    # 4. PARCIAIS (TAKE_PROFIT_MARKET / STOP_MARKET limpos sem reduceOnly)
+    # 4. PARCIAIS (TAKE_PROFIT_MARKET / STOP_MARKET)
     exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
@@ -92,7 +97,7 @@ def executar_operacao():
         'workingType': 'MARK_PRICE'
     })
     
-    print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
+    print("🛡️ Operação 100% armada com precisão exata da Binance!", flush=True)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
