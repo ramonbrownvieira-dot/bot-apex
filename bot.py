@@ -27,39 +27,36 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 2.0))     # Capital por lado ($)
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 2.0))
 
-# -------------------------------------------------------------------
-# PARAMETRIZAÇÃO DA PARCIAL (ÚNICA VARIÁVEL DE ENTRADA)
-# -------------------------------------------------------------------
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # Ex: 0.0050 = 0.50% | 0.0340 = 3.40%
+# PARAMETRIZAÇÃO MODELO PRÁTICO
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50% para testes
+TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
 
-# DERIVAÇÃO AUTOMÁTICA DOS DEMAIS NÍVEIS
-TRAVA_0X0_PCT = round(PARCIAL_PCT * (0.0576 / 0.0340), 6) # Proporção da Trava 0x0
-ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)               # Alvo Final = Metade da distância (Repique)
+TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) 
+ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)                          
 
-COOLDOWN_SEGUNDOS = 600    # 10 minutos após finalização do ciclo
+COOLDOWN_SEGUNDOS = 600
 
-def obter_preco_medio_executado(ordem, preco_fallback):
-    """Extrai o preço médio real executado da ordem na Binance."""
-    if not ordem:
+def obter_preco_executado_real(ordem_id, preco_fallback):
+    if not ordem_id:
         return preco_fallback
-    
-    avg_price = ordem.get('average') or ordem.get('price')
-    if avg_price and float(avg_price) > 0:
-        return float(avg_price)
-    
-    trades = ordem.get('trades') or []
-    if trades:
-        total_qty = sum(float(t.get('amount', 0)) for t in trades)
-        if total_qty > 0:
-            total_cost = sum(float(t.get('amount', 0)) * float(t.get('price', 0)) for t in trades)
-            return total_cost / total_qty
-            
+
+    for _ in range(3):
+        try:
+            trades = exchange.fetch_my_trades(SYMBOL, params={'orderId': str(ordem_id)})
+            if trades:
+                total_qty = sum(float(t['amount']) for t in trades)
+                if total_qty > 0:
+                    total_cost = sum(float(t['amount']) * float(t['price']) for t in trades)
+                    return total_cost / total_qty
+        except Exception as e:
+            print(f"⚠️ Aguardando Fills na Binance para ordem {ordem_id}... ({e})", flush=True)
+        time.sleep(0.5)
+
     return preco_fallback
 
 def obter_preco_atual():
-    """Consulta a cotação em tempo real via Ticker (Zero delay)."""
     try:
         ticker = exchange.fetch_ticker(SYMBOL)
         return float(ticker['last'])
@@ -67,8 +64,17 @@ def obter_preco_atual():
         print(f"⚠️ Erro ao consultar preço de mercado: {e}", flush=True)
         return None
 
+def obter_ids_ordens_abertas():
+    """Consulta os IDs de todas as ordens condicionais ativas no book da Binance."""
+    try:
+        ordens = exchange.fetch_open_orders(SYMBOL, params={'type': 'all'})
+        return [str(o['id']) for o in ordens]
+    except Exception as e:
+        print(f"⚠️ Erro ao consultar ordens abertas: {e}", flush=True)
+        return []
+
 def executar_ciclo():
-    print("🚀 [FASE 1] Executando entradas a mercado e armando ordens bidirecionais...", flush=True)
+    print("🚀 [FASE 1] Executando entradas a mercado e armando ordens no book...", flush=True)
     
     exchange.load_markets()
     
@@ -81,39 +87,39 @@ def executar_ciclo():
     qtd_moedas_raw = (CAPITAL_USDT * LEVERAGE) / precio_atual
     qtd_moedas = float(exchange.amount_to_precision(SYMBOL, qtd_moedas_raw))
     
-    # 1. Abertura a Mercado em Hedge Mode
+    # 1. Abertura Long/Short simultânea
     ordem_long = exchange.create_market_buy_order(SYMBOL, qtd_moedas, {'positionSide': 'LONG'})
     ordem_short = exchange.create_market_sell_order(SYMBOL, qtd_moedas, {'positionSide': 'SHORT'})
     
-    # 2. Leitura dos Preços Médios Reais Executados
-    p_long = obter_preco_medio_executado(ordem_long, precio_atual)
-    p_short = obter_preco_medio_executado(ordem_short, precio_atual)
+    time.sleep(0.5)
+    
+    # 2. Preço Médio Ponderado ($P_ref$) Real via Fills
+    p_long = obter_preco_executado_real(ordem_long.get('id'), precio_atual)
+    p_short = obter_preco_executado_real(ordem_short.get('id'), precio_atual)
     p_ref = (p_long + p_short) / 2.0
     
-    print(f"✅ Execução Real: Long {p_long:.6f} | Short {p_short:.6f} | Preço Ref PMP: {p_ref:.6f}", flush=True)
+    print(f"✅ Execução Real Fills: Long {p_long:.6f} | Short {p_short:.6f} | Preço Ref PMP: {p_ref:.6f}", flush=True)
     
-    # 3. Cálculo dos Níveis de Preço (Alta e Queda)
-    # Queda
+    # 3. Níveis de Preço
     p_parcial_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
     p_0x0_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
-    p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT))) # Repique na Metade
+    p_alvo_baixa = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
     
-    # Alta
     p_parcial_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + PARCIAL_PCT)))
     p_0x0_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + TRAVA_0X0_PCT)))
-    p_alvo_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + ALVO_FINAL_PCT)))  # Repique na Metade
+    p_alvo_alta = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 + ALVO_FINAL_PCT)))
     
     qtd_parcial_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.85))
     qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📊 Porcentagens: Parcial {PARCIAL_PCT*100:.2f}% | Trava 0x0 {TRAVA_0X0_PCT*100:.2f}% | Alvo Repique {ALVO_FINAL_PCT*100:.3f}%", flush=True)
+    print(f"📊 Parcial: {PARCIAL_PCT*100:.2f}% | Trava 0x0 c/ Taxas: {TRAVA_0X0_PCT*100:.2f}% | Alvo Repique: {ALVO_FINAL_PCT*100:.3f}%", flush=True)
     print(f"📌 Queda -> Parcial: {p_parcial_baixa} | 0x0: {p_0x0_baixa} | Alvo Repique: {p_alvo_baixa}", flush=True)
     print(f"📌 Alta  -> Parcial: {p_parcial_alta} | 0x0: {p_0x0_alta} | Alvo Repique: {p_alvo_alta}", flush=True)
     
-    # 4. Posicionar Ordens Condicionais no Book da Binance
+    # 4. Posicionar Ordens Condicionais
     # Lado da Queda
-    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
+    o_p_baixa_short = exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT', 'stopPrice': p_parcial_baixa, 'workingType': 'MARK_PRICE'
     })
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_parcial_long, None, {
@@ -127,7 +133,7 @@ def executar_ciclo():
     })
     
     # Lado da Alta
-    exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'sell', qtd_parcial_long, None, {
+    o_p_alta_long = exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'sell', qtd_parcial_long, None, {
         'positionSide': 'LONG', 'stopPrice': p_parcial_alta, 'workingType': 'MARK_PRICE'
     })
     exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_parcial_short, None, {
@@ -140,76 +146,90 @@ def executar_ciclo():
         'positionSide': 'LONG', 'stopPrice': p_0x0_alta, 'workingType': 'MARK_PRICE'
     })
     
-    print("⏳ [FASE 1 OK] Posições e proteções armadas para ALTA e QUEDA. Monitorando cotação...", flush=True)
+    id_p_baixa = str(o_p_baixa_short['id'])
+    id_p_alta = str(o_p_alta_long['id'])
     
-    # 5. MONITORAMENTO DE PREÇO DA FASE 1
+    print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando cotação e execução de ordens...", flush=True)
+    
+    # 5. Monitoramento Híbrido da Fase 1 (Preço + Status da Ordem no Book)
     lado_atingido = None
     
     while True:
         p_mercado = obter_preco_atual()
-        if not p_mercado:
-            time.sleep(3)
-            continue
-            
-        # Verificação de Travas 0x0
-        if p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta:
-            print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
-            return
-            
-        # Verificação de Parcial na Queda
-        if p_mercado <= p_parcial_baixa:
-            print(f"🎯 PARCIAL DE QUEDA ATINGIDA! Cotação: {p_mercado:.6f} <= {p_parcial_baixa:.6f}", flush=True)
-            lado_atingido = 'QUEDA'
-            break
-            
-        # Verificação de Parcial na Alta
-        if p_mercado >= p_parcial_alta:
-            print(f"🎯 PARCIAL DE ALTA ATINGIDA! Cotação: {p_mercado:.6f} >= {p_parcial_alta:.6f}", flush=True)
+        ids_ativas = obter_ids_ordens_abertas()
+        
+        # Se a ordem de parcial da ALTA sumiu do book OU o preço ultrapassou a meta
+        if id_p_alta not in ids_ativas or (p_mercado and p_mercado >= p_parcial_alta):
+            print(f"🎯 PARCIAL DE ALTA DETECTADA NA BINANCE!", flush=True)
             lado_atingido = 'ALTA'
             break
             
+        # Se a ordem de parcial da QUEDA sumiu do book OU o preço ultrapassou a meta
+        if id_p_baixa not in ids_ativas or (p_mercado and p_mercado <= p_parcial_baixa):
+            print(f"🎯 PARCIAL DE QUEDA DETECTADA NA BINANCE!", flush=True)
+            lado_atingido = 'QUEDA'
+            break
+            
+        # Se o mercado bateu direto na Trava 0x0
+        if p_mercado and (p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta):
+            print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
+            try:
+                exchange.cancel_all_orders(SYMBOL)
+            except:
+                pass
+            return
+            
         time.sleep(3)
     
-    # 6. FASE 2: Posicionar Alvo Final (Repique) no book
+    # 6. FASE 2: Limpar lixo do book e posicionar Alvo Final (Repique)
     if lado_atingido:
-        print(f"🚀 [FASE 2] Posicionando Alvo de Repique do movimento de {lado_atingido}...", flush=True)
+        print(f"🧹 Limpando ordens antigas do book para liberar margem...", flush=True)
+        try:
+            exchange.cancel_all_orders(SYMBOL)
+            print("✅ Book limpo com sucesso!", flush=True)
+        except Exception as e:
+            print(f"⚠️ Alerta ao cancelar ordens antigas: {e}", flush=True)
+            
+        print(f"🚀 [FASE 2] Posicionando Alvo de Repique de {lado_atingido}...", flush=True)
         
         qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
         qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
         
         try:
             if lado_atingido == 'QUEDA':
-                # No repique da queda, o preço sobe de volta em direção ao alvo
                 exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_alvo_short, None, {
                     'positionSide': 'SHORT', 'stopPrice': p_alvo_baixa, 'workingType': 'MARK_PRICE'
                 })
                 exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_alvo_long, None, {
                     'positionSide': 'LONG', 'stopPrice': p_alvo_baixa, 'workingType': 'MARK_PRICE'
                 })
+                # Rearma a Trava 0x0 do lado restante
+                exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_total, None, {
+                    'positionSide': 'SHORT', 'stopPrice': p_0x0_baixa, 'workingType': 'MARK_PRICE'
+                })
             elif lado_atingido == 'ALTA':
-                # No repique da alta, o preço cai de volta em direção ao alvo
                 exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'sell', qtd_alvo_long, None, {
                     'positionSide': 'LONG', 'stopPrice': p_alvo_alta, 'workingType': 'MARK_PRICE'
                 })
                 exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_alvo_short, None, {
                     'positionSide': 'SHORT', 'stopPrice': p_alvo_alta, 'workingType': 'MARK_PRICE'
                 })
-            print("🛡️ [FASE 2 OK] Alvos de repique armados no book!", flush=True)
+                # Rearma a Trava 0x0 do lado restante
+                exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_total, None, {
+                    'positionSide': 'SHORT', 'stopPrice': p_0x0_alta, 'workingType': 'MARK_PRICE'
+                })
+            print("🛡️ [FASE 2 OK] Alvo e Trava 0x0 do repique armados no book!", flush=True)
         except Exception as e:
             print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
             
-        # Monitora a cotação até o encerramento do repique ou 0x0
+        # Monitora liquidação no repique
         while True:
             p_mercado = obter_preco_atual()
-            if not p_mercado:
-                time.sleep(3)
-                continue
-                
-            if lado_atingido == 'QUEDA' and (p_mercado >= p_alvo_baixa or p_mercado <= p_0x0_baixa):
-                print(f"🏁 Operação de Queda finalizada no Repique/0x0! Cotação: {p_mercado:.6f}", flush=True)
-                break
-            elif lado_atingido == 'ALTA' and (p_mercado <= p_alvo_alta or p_mercado >= p_0x0_alta):
-                print(f"🏁 Operação de Alta finalizada no Repique/0x0! Cotação: {p_mercado:.6f}", flush=True)
+            ids_ativas = obter_ids_ordens_abertas()
+            
+            # Se não houver mais ordens ativas no book, a operação encerrou na Binance
+            if len(ids_ativas) == 0:
+                print(f"🏁 Operação de {lado_atingido} finalizada no Repique/0x0!", flush=True)
                 break
                 
             time.sleep(3)
