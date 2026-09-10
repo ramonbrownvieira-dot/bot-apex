@@ -27,10 +27,10 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 2.0))
+CAPITAL_USDT = float(os.getenv('CAPITAL_USDT', 5.0))     # Subido para $5 para sustentar a margem livre
 
-# PARAMETRIZAÇÃO MODELO PRÁTICO
-PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0050))     # 0.50% para testes
+# PARAMETRIZAÇÃO MODELO PRÁTICO (Ajustado para 1.00% de teste)
+PARCIAL_PCT = float(os.getenv('PARCIAL_PCT', 0.0100))     # 1.00% para teste limpo
 TAXA_ESTIMADA_PCT = 0.0020                                 # Taxas (0.20%)
 
 TRAVA_0X0_PCT = round((PARCIAL_PCT * 1.6941) + TAXA_ESTIMADA_PCT, 6) 
@@ -149,28 +149,30 @@ def executar_ciclo():
     id_p_baixa = str(o_p_baixa_short['id'])
     id_p_alta = str(o_p_alta_long['id'])
     
-    print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando cotação e execução de ordens...", flush=True)
+    print("⏳ [FASE 1 OK] Ordens armadas no book. Monitorando execuções reais...", flush=True)
     
-    # 5. Monitoramento Híbrido da Fase 1 (Preço + Status da Ordem no Book)
+    # Pausa de 5 segundos para o mercado assentar o spread inicial
+    time.sleep(5)
+    
+    # 5. Monitoramento da Fase 1 (Prioridade Total para Desaparecimento da Ordem no Book)
     lado_atingido = None
     
     while True:
-        p_mercado = obter_preco_atual()
         ids_ativas = obter_ids_ordens_abertas()
+        p_mercado = obter_preco_atual()
         
-        # Se a ordem de parcial da ALTA sumiu do book OU o preço ultrapassou a meta
-        if id_p_alta not in ids_ativas or (p_mercado and p_mercado >= p_parcial_alta):
-            print(f"🎯 PARCIAL DE ALTA DETECTADA NA BINANCE!", flush=True)
+        # 1. Checagem Principal: A ordem de parcial sumiu do book porque a Binance EXECUTOU?
+        if id_p_alta not in ids_ativas:
+            print(f"🎯 PARCIAL DE ALTA EXECUTADA NA BINANCE (Ordem sumiu do book)!", flush=True)
             lado_atingido = 'ALTA'
             break
             
-        # Se a ordem de parcial da QUEDA sumiu do book OU o preço ultrapassou a meta
-        if id_p_baixa not in ids_ativas or (p_mercado and p_mercado <= p_parcial_baixa):
-            print(f"🎯 PARCIAL DE QUEDA DETECTADA NA BINANCE!", flush=True)
+        if id_p_baixa not in ids_ativas:
+            print(f"🎯 PARCIAL DE QUEDA EXECUTADA NA BINANCE (Ordem sumiu do book)!", flush=True)
             lado_atingido = 'QUEDA'
             break
             
-        # Se o mercado bateu direto na Trava 0x0
+        # 2. Checagem Secundária: Trava 0x0
         if p_mercado and (p_mercado <= p_0x0_baixa or p_mercado >= p_0x0_alta):
             print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f}", flush=True)
             try:
@@ -179,9 +181,9 @@ def executar_ciclo():
                 pass
             return
             
-        time.sleep(3)
+        time.sleep(2)
     
-    # 6. FASE 2: Limpar lixo do book e posicionar Alvo Final (Repique)
+    # 6. FASE 2: Limpar lixo e posicionar Alvo de Repique
     if lado_atingido:
         print(f"🧹 Limpando ordens antigas do book para liberar margem...", flush=True)
         try:
@@ -203,7 +205,6 @@ def executar_ciclo():
                 exchange.create_order(SYMBOL, 'STOP_MARKET', 'sell', qtd_alvo_long, None, {
                     'positionSide': 'LONG', 'stopPrice': p_alvo_baixa, 'workingType': 'MARK_PRICE'
                 })
-                # Rearma a Trava 0x0 do lado restante
                 exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_total, None, {
                     'positionSide': 'SHORT', 'stopPrice': p_0x0_baixa, 'workingType': 'MARK_PRICE'
                 })
@@ -214,7 +215,6 @@ def executar_ciclo():
                 exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_alvo_short, None, {
                     'positionSide': 'SHORT', 'stopPrice': p_alvo_alta, 'workingType': 'MARK_PRICE'
                 })
-                # Rearma a Trava 0x0 do lado restante
                 exchange.create_order(SYMBOL, 'STOP_MARKET', 'buy', qtd_total, None, {
                     'positionSide': 'SHORT', 'stopPrice': p_0x0_alta, 'workingType': 'MARK_PRICE'
                 })
@@ -224,14 +224,10 @@ def executar_ciclo():
             
         # Monitora liquidação no repique
         while True:
-            p_mercado = obter_preco_atual()
             ids_ativas = obter_ids_ordens_abertas()
-            
-            # Se não houver mais ordens ativas no book, a operação encerrou na Binance
             if len(ids_ativas) == 0:
                 print(f"🏁 Operação de {lado_atingido} finalizada no Repique/0x0!", flush=True)
                 break
-                
             time.sleep(3)
 
 def loop_bot():
