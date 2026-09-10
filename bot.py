@@ -13,7 +13,7 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# Inicialização atualizada para a nova API Demo Trading Futures da Binance
+# Inicialização com o padrão oficial do CCXT para Binance Demo Trading
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
@@ -21,15 +21,11 @@ exchange = ccxt.binance({
     'options': {
         'defaultType': 'future',
         'adjustForTimeDifference': True
-    },
-    'urls': {
-        'api': {
-            'fapiPublic': 'https://demo.binance.com/fapi/v1',
-            'fapiPrivate': 'https://demo.binance.com/fapi/v1',
-            'fapiPrivateV2': 'https://demo.binance.com/fapi/v2'
-        }
     }
 })
+
+# Ativa o modo Demo Trading oficial do CCXT
+exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
@@ -99,7 +95,7 @@ def executar_operacao():
     print("🛡️ Operação 100% armada e visível na Binance!", flush=True)
 
 def loop_bot():
-    print("🤖 Bot APEX iniciado na nuvem (Europa)...", flush=True)
+    print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
     while True:
         try:
             executar_operacao()
