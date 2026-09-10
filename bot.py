@@ -27,33 +27,20 @@ exchange.enable_demo_trading(True)
 
 SYMBOL = 'TUSDT'
 LEVERAGE = 10
-CAPITAL_USDT = 2.0         # Pode ser alterado para qualquer valor (ex: 10, 50, 100)
+CAPITAL_USDT = 2.0         # Funciona para qualquer valor de banca
 PARCIAL_PCT = 0.0340       # 3.40%
 TRAVA_0X0_PCT = 0.0576     # 5.76%
 ALVO_FINAL_PCT = 0.0800    # 8.00%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos (após fechamento total)
 
-def obter_margens_posicoes():
-    """Lê a margem alocada nas posições Long e Short."""
-    margin_long, margin_short = 0.0, 0.0
+def obter_preco_atual():
+    """Consulta o preço de mercado em tempo real via Ticker (Zero Delay)."""
     try:
-        positions = exchange.fetch_positions([SYMBOL])
-        for pos in positions:
-            if pos['symbol'] == SYMBOL:
-                side = pos.get('side') or pos.get('info', {}).get('positionSide')
-                initial_margin = float(pos.get('initialMargin', 0) or pos.get('info', {}).get('positionInitialMargin', 0) or 0)
-                
-                if initial_margin == 0:
-                    notional = abs(float(pos.get('notional', 0) or pos.get('info', {}).get('notional', 0) or 0))
-                    initial_margin = notional / LEVERAGE
-                
-                if side == 'LONG' or pos.get('positionSide') == 'LONG':
-                    margin_long = initial_margin
-                elif side == 'SHORT' or pos.get('positionSide') == 'SHORT':
-                    margin_short = initial_margin
+        ticker = exchange.fetch_ticker(SYMBOL)
+        return float(ticker['last'])
     except Exception as e:
-        print(f"⚠️ Erro ao consultar margens: {e}", flush=True)
-    return margin_long, margin_short
+        print(f"⚠️ Erro ao consultar preço de mercado: {e}", flush=True)
+        return None
 
 def executar_ciclo():
     print("🚀 [FASE 1] Executando entradas e posicionando Parciais e Trava 0x0...", flush=True)
@@ -65,8 +52,7 @@ def executar_ciclo():
     except Exception as e:
         print(f"⚠️ Alerta ao definir alavancagem: {e}", flush=True)
     
-    ticker = exchange.fetch_ticker(SYMBOL)
-    precio_atual = ticker['last']
+    precio_atual = obter_preco_atual()
     qtd_moedas_raw = (CAPITAL_USDT * LEVERAGE) / precio_atual
     qtd_moedas = float(exchange.amount_to_precision(SYMBOL, qtd_moedas_raw))
     
@@ -80,7 +66,7 @@ def executar_ciclo():
     
     print(f"✅ Entradas: Long {p_long} | Short {p_short} | Preço Ref: {p_ref:.6f}", flush=True)
     
-    # 2. Cálculos dos Níveis
+    # 2. Cálculos dos Níveis de Preço
     preco_parcial = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - PARCIAL_PCT)))
     preco_0x0 = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - TRAVA_0X0_PCT)))
     preco_alvo = float(exchange.price_to_precision(SYMBOL, p_ref * (1.0 - ALVO_FINAL_PCT)))
@@ -89,9 +75,9 @@ def executar_ciclo():
     qtd_parcial_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.30))
     qtd_total = float(exchange.amount_to_precision(SYMBOL, qtd_moedas))
     
-    print(f"📌 Parcial em: {preco_parcial} | Trava 0x0 em: {preco_0x0}", flush=True)
+    print(f"📌 Parcial em: {preco_parcial} | Trava 0x0 em: {preco_0x0} | Alvo em: {preco_alvo}", flush=True)
     
-    # 3. Armar Parciais e Trava 0x0 Inicial
+    # 3. Armar Parciais e Trava 0x0 Inicial na Binance
     exchange.create_order(SYMBOL, 'TAKE_PROFIT_MARKET', 'buy', qtd_parcial_short, None, {
         'positionSide': 'SHORT',
         'stopPrice': preco_parcial,
@@ -116,54 +102,33 @@ def executar_ciclo():
         'workingType': 'MARK_PRICE'
     })
     
-    print("⏳ [FASE 1 OK] Posições armadas. Aguardando estabilização do cache da API...", flush=True)
+    print("⏳ [FASE 1 OK] Posições armadas na Binance. Monitorando cotação em tempo real...", flush=True)
     
-    # Aguarda o cache registrar a margem na API
-    time.sleep(30)
-    
-    # Captura a margem inicial combinada de referência
-    m_long_ini, m_short_ini = obter_margens_posicoes()
-    margem_inicial_total = m_long_ini + m_short_ini
-    
-    # Prevenção caso o retorno de margem venha zerado por instabilidade da API
-    if margem_inicial_total <= 0:
-        margem_inicial_total = CAPITAL_USDT * 2.0
-        
-    print(f"👀 [MONITORAMENTO] Margem Inicial Registrada: ${margem_inicial_total:.2f}. Monitorando percentuais...", flush=True)
-    
-    # 4. MONITORAMENTO PERCENTUAL DA FASE 1
-    parcial_detectada = False
-    confirmacoes_zerado = 0
+    # 4. MONITORAMENTO DE PREÇO DA FASE 1
+    parcial_atingida = False
     
     while True:
-        m_long, m_short = obter_margens_posicoes()
-        margem_atual_total = m_long + m_short
-        
-        # Posição zerada: Margem atual representa menos de 2% da margem inicial
-        if margem_atual_total <= (margem_inicial_total * 0.02):
-            confirmacoes_zerado += 1
-            if confirmacoes_zerado >= 3:
-                print(f"🏁 Margem Zerada (Atual: ${margem_atual_total:.2f} / Inicial: ${margem_inicial_total:.2f}). Trava 0x0 executada antes da Parcial.", flush=True)
-                return
-        else:
-            confirmacoes_zerado = 0
+        p_mercado = obter_preco_atual()
+        if not p_mercado:
+            time.sleep(3)
+            continue
             
-            # Cálculo do desequilíbrio entre as pontas Long e Short
-            diferenca_relativa = abs(m_long - m_short) / max((m_long + m_short), 0.001)
+        # Posições encerradas na Trava 0x0 (Preço caiu abaixo do nível do 0x0)
+        if p_mercado <= preco_0x0:
+            print(f"🏁 Trava 0x0 atingida no preço! Cotação: {p_mercado:.6f} <= Gatilho: {preco_0x0:.6f}", flush=True)
+            return
             
-            # Detecta parcial se:
-            # 1. A margem total caiu para menos de 75% da margem inicial OU
-            # 2. O desequilíbrio entre as pontas Long e Short for maior que 25%
-            if (margem_atual_total <= (margem_inicial_total * 0.75)) or (diferenca_relativa >= 0.25):
-                print(f"🎯 PARCIAL EXECUTADA! Margem Atual: ${margem_atual_total:.2f} (Inicial: ${margem_inicial_total:.2f} | Desequilíbrio: {diferenca_relativa*100:.1f}%)", flush=True)
-                parcial_detectada = True
-                break
-                
-        time.sleep(5)
+        # Detecta que o preço atingiu ou cruzou a Parcial
+        if p_mercado <= preco_parcial:
+            print(f"🎯 PARCIAL ATINGIDA NO PREÇO! Cotação: {p_mercado:.6f} <= Gatilho: {preco_parcial:.6f}", flush=True)
+            parcial_atingida = True
+            break
+            
+        time.sleep(3)
     
-    # 5. FASE 2: Posicionar Alvo Final para qualquer valor de capital
-    if parcial_detectada:
-        print("🚀 [FASE 2] Posicionando ordens de Alvo Final na Binance...", flush=True)
+    # 5. FASE 2: Posicionar Alvo Final na Binance para a quantidade restante
+    if parcial_atingida:
+        print("🚀 [FASE 2] Posicionando ordens de Alvo Final no book da Binance...", flush=True)
         
         qtd_alvo_short = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.15))
         qtd_alvo_long = float(exchange.amount_to_precision(SYMBOL, qtd_moedas * 0.70))
@@ -183,25 +148,25 @@ def executar_ciclo():
         except Exception as e:
             print(f"⚠️ Alerta ao posicionar alvo final: {e}", flush=True)
             
-        # Monitora até o encerramento total da margem
-        confirmacoes_zerado = 0
+        # Monitora a cotação até o encerramento total (Alvo ou Trava 0x0)
         while True:
-            m_long, m_short = obter_margens_posicoes()
-            if (m_long + m_short) <= (margem_inicial_total * 0.02):
-                confirmacoes_zerado += 1
-                if confirmacoes_zerado >= 3:
-                    print("🏁 Operação 100% finalizada com Alvo! Margem zerada.", flush=True)
-                    break
-            else:
-                confirmacoes_zerado = 0
-            time.sleep(5)
+            p_mercado = obter_preco_atual()
+            if not p_mercado:
+                time.sleep(3)
+                continue
+                
+            if p_mercado <= preco_alvo or p_mercado <= preco_0x0:
+                print(f"🏁 Operação finalizada! Cotação: {p_mercado:.6f}", flush=True)
+                break
+                
+            time.sleep(3)
 
 def loop_bot():
     print("🤖 Bot APEX iniciado na nuvem (Europa - Demo Trading)...", flush=True)
     while True:
         try:
             executar_ciclo()
-            print(f"⏳ Operação concluída. Aguardando Cooldown de {COOLDOWN_SEGUNDOS/60} minutos...\n", flush=True)
+            print(f"⏳ Operação concluída. Aguardando Cooldown de {COOLDOWN_SEGUNDOS/60} minutos para o próximo ciclo...\n", flush=True)
             time.sleep(COOLDOWN_SEGUNDOS)
         except Exception as e:
             print(f"⚠️ Erro no ciclo: {e}", flush=True)
