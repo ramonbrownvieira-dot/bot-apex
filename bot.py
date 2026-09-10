@@ -30,7 +30,7 @@ LEVERAGE = 10
 CAPITAL_USDT = 2.0         # $2 por lado
 PARCIAL_PCT = 0.0340       # 3.40%
 TRAVA_0X0_PCT = 0.0576     # 5.76%
-ALVO_FINAL_PCT = 0.0800    # Exemplo: 8.00% para o alvo final pós-parcial
+ALVO_FINAL_PCT = 0.0800    # 8.00%
 COOLDOWN_SEGUNDOS = 600    # 10 minutos
 
 def obter_quantidade_posicoes():
@@ -113,18 +113,24 @@ def executar_ciclo():
     
     print("⏳ [FASE 1 OK] Aguardando o mercado atingir a Parcial...", flush=True)
     
-    # Aguarda a confirmação de que as posições foram computadas na API
-    time.sleep(5)
+    # Pausa estritamente necessária para a API propagar as posições abertas
+    time.sleep(10)
     
     # 4. LOOP DE MONITORAMENTO DA FASE 1 (Aguardando Parcial)
     parcial_executada = False
+    contagem_zerada = 0
+    
     while True:
         l_qty, s_qty = obter_quantidade_posicoes()
         
-        # Se ambas fecharam antes da parcial (ex: bateram na trava 0x0 direta)
+        # Se zerar, exige 3 confirmações seguidas (15s) para garantir que não é falso negativo da API
         if l_qty == 0 and s_qty == 0:
-            print("🏁 Posições encerradas na Trava 0x0 antes da Parcial.", flush=True)
-            return
+            contagem_zerada += 1
+            if contagem_zerada >= 3:
+                print("🏁 Posições encerradas na Trava 0x0 antes da Parcial.", flush=True)
+                return
+        else:
+            contagem_zerada = 0 # Reseta se ler posição ativa
             
         # Detecta que a parcial foi executada (quantidade diminuiu)
         if (s_qty < qtd_total or l_qty < qtd_total) and (l_qty > 0 or s_qty > 0):
@@ -155,12 +161,17 @@ def executar_ciclo():
             
         print("🛡️ [FASE 2 OK] Alvos armados! Aguardando finalização do ciclo...", flush=True)
         
-        # Monitora até o encerramento total
+        # Monitora com confirmação até o encerramento total
+        contagem_zerada = 0
         while True:
             l_qty, s_qty = obter_quantidade_posicoes()
             if l_qty == 0 and s_qty == 0:
-                print("🏁 Operação 100% finalizada!", flush=True)
-                break
+                contagem_zerada += 1
+                if contagem_zerada >= 3:
+                    print("🏁 Operação 100% finalizada!", flush=True)
+                    break
+            else:
+                contagem_zerada = 0
             time.sleep(5)
 
 def loop_bot():
