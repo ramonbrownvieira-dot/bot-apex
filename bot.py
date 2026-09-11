@@ -15,7 +15,6 @@ SALDO_BANCA_USDT = 100.00                                  # Banca inicial fict�
 CAPITAL_POR_LADO = 10.00                                   # Margem fictícia por lado (US$ 10.00)
 LEVERAGE = 10                                              # Alavancagem 10x
 
-# MODELO 85/15 COM PARCIAL DE 0.50%
 PARCIAL_PCT = 0.0050                                       # Parcial a 0.50%
 PCT_FECHAR_VENCEDOR = 0.85                                 # Realiza 85% do vencedor
 PCT_FECHAR_PERDEDOR = 0.15                                 # Descarta 15% do perdedor
@@ -30,7 +29,6 @@ TRAVA_0X0_PCT = round(CALC_TRAVA, 6)                      # ~0.80% total da entr
 ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)              # 0.25% (Repique na metade)
 
 COOLDOWN_SEGUNDOS = 180                                    # Cooldown de 3 minutos
-
 WS_URL = "wss://fstream.binance.com/ws/btcusdt@ticker"
 
 def log_instantaneo(mensagem):
@@ -39,16 +37,12 @@ def log_instantaneo(mensagem):
 
 @app.route('/')
 def health_check():
-    return f"Bot APEX Paper Trading Mainnet Direct WS | Saldo: ${SALDO_BANCA_USDT:.2f} USDT", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    return f"Bot APEX Paper Trading Mainnet | Saldo: ${SALDO_BANCA_USDT:.2f} USDT", 200
 
 async def obter_proximo_preco_ws(ws):
     msg = await ws.recv()
     data = json.loads(msg)
-    return float(data['c']) # 'c' é o último preço negociado no ticker
+    return float(data['c'])
 
 async def executar_ciclo_paper_nativo():
     global SALDO_BANCA_USDT
@@ -56,7 +50,6 @@ async def executar_ciclo_paper_nativo():
     log_instantaneo(f"💰 Saldo da Banca Simulada: ${SALDO_BANCA_USDT:.2f} USDT")
 
     async with websockets.connect(WS_URL) as ws:
-        # 1. Capturar o primeiro tick real para entrada
         log_instantaneo("⏳ Aguardando recebimento do primeiro tick da Binance...")
         p_ref = await obter_proximo_preco_ws(ws)
         
@@ -78,16 +71,14 @@ async def executar_ciclo_paper_nativo():
         log_instantaneo("⚡ [STREAM DIRETA ATIVA] Monitorando preços em tempo real...")
 
         lado_atingido = None
-
-        # 2. FASE 1: Monitoramento via Stream Nativa
         contador_ticks = 0
+
         while True:
             p_mkt = await obter_proximo_preco_ws(ws)
             contador_ticks += 1
 
-            # Log Heartbeat a cada 30 ticks para confirmar funcionamento
             if contador_ticks % 30 == 0:
-                log_instantaneo(f"💓 [HEARTBEAT WS] Cotação Atual BTC: {p_mkt:.2f}")
+                log_instantaneo(f"💓 [HEARTBEAT WS] Cotação BTC: {p_mkt:.2f}")
 
             if p_mkt <= p_parcial_baixa:
                 log_instantaneo(f"🎯 [PUSH DIRECT WS] Cotação Real {p_mkt:.2f} <= Parcial Queda {p_parcial_baixa:.2f}!")
@@ -106,7 +97,6 @@ async def executar_ciclo_paper_nativo():
                 log_instantaneo(f"🛑 Operação encerrada no 0x0. Saldo Banca: ${SALDO_BANCA_USDT:.2f} USDT\n")
                 return
 
-        # 3. FASE 2: Liquidação da Parcial + Acompanhamento do Repique
         if lado_atingido:
             lucro_bruto_parcial = (CAPITAL_POR_LADO * LEVERAGE) * (PCT_FECHAR_VENCEDOR - PCT_FECHAR_PERDEDOR) * PARCIAL_PCT
             taxa_parcial = nocional_total * (PCT_FECHAR_VENCEDOR + PCT_FECHAR_PERDEDOR) / 2.0 * TAXA_TAKER_BINANCE
@@ -159,9 +149,11 @@ async def main_loop():
 def iniciar_bot():
     asyncio.run(main_loop())
 
+# Dispara a thread do bot assim que a aplicação é importada/iniciada
+thread_bot = threading.Thread(target=iniciar_bot, daemon=True)
+thread_bot.start()
+log_instantaneo("🚀 Thread do Bot disparada em segundo plano!")
+
 if __name__ == '__main__':
-    # Inicia a thread do Bot e força flush nos logs
-    t = threading.Thread(target=iniciar_bot, daemon=True)
-    t.start()
-    log_instantaneo("🚀 Servidor Flask e Thread de Trading disparados!")
-    run_flask()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
