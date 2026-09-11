@@ -31,12 +31,16 @@ ALVO_FINAL_PCT = round(PARCIAL_PCT / 2.0, 6)              # 0.25% (Repique na me
 COOLDOWN_SEGUNDOS = 180                                    # Cooldown de 3 minutos
 WS_URL = "wss://fstream.binance.com/ws/btcusdt@ticker"
 
+BOT_INICIADO = False
+
 def log_instantaneo(mensagem):
     print(mensagem, flush=True)
     sys.stdout.flush()
 
 @app.route('/')
 def health_check():
+    # Garante que o Bot só inicia DEPOIS que a rota HTTP respondeu OK ao Render
+    garantir_bot_rodando()
     return f"Bot APEX Paper Trading Mainnet | Saldo: ${SALDO_BANCA_USDT:.2f} USDT", 200
 
 async def obter_proximo_preco_ws(ws):
@@ -135,25 +139,28 @@ async def executar_ciclo_paper_nativo():
 
             log_instantaneo(f"📊 [RESULTADO DO CICLO] Saldo Atual da Banca: ${SALDO_BANCA_USDT:.2f} USDT\n")
 
-async def main_loop():
-    log_instantaneo("🤖 Bot APEX Paper Trader Iniciando Event Loop...")
+def loop_async_wrapper():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    log_instantaneo("🤖 Bot APEX Paper Trader Event Loop disparado!")
     while True:
         try:
-            await executar_ciclo_paper_nativo()
+            loop.run_until_complete(executar_ciclo_paper_nativo())
             log_instantaneo(f"⏳ Cooldown de {COOLDOWN_SEGUNDOS/60:.1f} minutos para o próximo ciclo...\n")
-            await asyncio.sleep(COOLDOWN_SEGUNDOS)
+            loop.run_until_complete(asyncio.sleep(COOLDOWN_SEGUNDOS))
         except Exception as e:
             log_instantaneo(f"⚠️ Erro no ciclo Mainnet WebSocket: {e}")
-            await asyncio.sleep(10)
+            loop.run_until_complete(asyncio.sleep(10))
 
-def iniciar_bot():
-    asyncio.run(main_loop())
-
-# Dispara a thread do bot assim que a aplicação é importada/iniciada
-thread_bot = threading.Thread(target=iniciar_bot, daemon=True)
-thread_bot.start()
-log_instantaneo("🚀 Thread do Bot disparada em segundo plano!")
+def garantir_bot_rodando():
+    global BOT_INICIADO
+    if not BOT_INICIADO:
+        BOT_INICIADO = True
+        t = threading.Thread(target=loop_async_wrapper, daemon=True)
+        t.start()
+        log_instantaneo("🚀 Thread do WebSocket disparada com sucesso!")
 
 if __name__ == '__main__':
+    garantir_bot_rodando()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
