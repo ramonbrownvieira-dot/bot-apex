@@ -2,6 +2,7 @@ import asyncio
 import json
 import websockets
 import os
+import sys
 import threading
 from flask import Flask
 
@@ -32,12 +33,17 @@ COOLDOWN_SEGUNDOS = 180                                    # Cooldown de 3 minut
 
 WS_URL = "wss://fstream.binance.com/ws/btcusdt@ticker"
 
+def log_instantaneo(mensagem):
+    print(mensagem, flush=True)
+    sys.stdout.flush()
+
 @app.route('/')
 def health_check():
     return f"Bot APEX Paper Trading Mainnet Direct WS | Saldo: ${SALDO_BANCA_USDT:.2f} USDT", 200
 
 def run_flask():
-    app.run(host='0.0.0.0', port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 async def obter_proximo_preco_ws(ws):
     msg = await ws.recv()
@@ -46,11 +52,12 @@ async def obter_proximo_preco_ws(ws):
 
 async def executar_ciclo_paper_nativo():
     global SALDO_BANCA_USDT
-    print(f"\n🌐 [MAINNET DIRECT WEBSOCKET] Conectando a stream nativa da Binance Futures...", flush=True)
-    print(f"💰 Saldo da Banca Simulada: ${SALDO_BANCA_USDT:.2f} USDT", flush=True)
+    log_instantaneo(f"\n🌐 [MAINNET DIRECT WEBSOCKET] Conectando a stream nativa da Binance Futures...")
+    log_instantaneo(f"💰 Saldo da Banca Simulada: ${SALDO_BANCA_USDT:.2f} USDT")
 
     async with websockets.connect(WS_URL) as ws:
         # 1. Capturar o primeiro tick real para entrada
+        log_instantaneo("⏳ Aguardando recebimento do primeiro tick da Binance...")
         p_ref = await obter_proximo_preco_ws(ws)
         
         nocional_total = (CAPITAL_POR_LADO * LEVERAGE) * 2
@@ -65,32 +72,38 @@ async def executar_ciclo_paper_nativo():
         p_0x0_alta = p_ref * (1.0 + TRAVA_0X0_PCT)
         p_alvo_alta = p_ref * (1.0 + ALVO_FINAL_PCT)
 
-        print(f"✅ [ENTRADA NATIVA WS] PMP Mainnet: {p_ref:.2f} | Taxa Abertura: -${taxa_abertura:.4f} USDT", flush=True)
-        print(f"📌 Queda -> Parcial: {p_parcial_baixa:.2f} | 0x0 Limite: {p_0x0_baixa:.2f} | Alvo Repique: {p_alvo_baixa:.2f}", flush=True)
-        print(f"📌 Alta  -> Parcial: {p_parcial_alta:.2f} | 0x0 Limite: {p_0x0_alta:.2f} | Alvo Repique: {p_alvo_alta:.2f}", flush=True)
-        print("⚡ [STREAM DIRETA ATIVA] Ouvindo cotações de alta velocidade sem HTTP REST...", flush=True)
+        log_instantaneo(f"✅ [ENTRADA NATIVA WS] PMP Mainnet: {p_ref:.2f} | Taxa Abertura: -${taxa_abertura:.4f} USDT")
+        log_instantaneo(f"📌 Queda -> Parcial: {p_parcial_baixa:.2f} | 0x0 Limite: {p_0x0_baixa:.2f} | Alvo Repique: {p_alvo_baixa:.2f}")
+        log_instantaneo(f"📌 Alta  -> Parcial: {p_parcial_alta:.2f} | 0x0 Limite: {p_0x0_alta:.2f} | Alvo Repique: {p_alvo_alta:.2f}")
+        log_instantaneo("⚡ [STREAM DIRETA ATIVA] Monitorando preços em tempo real...")
 
         lado_atingido = None
 
         # 2. FASE 1: Monitoramento via Stream Nativa
+        contador_ticks = 0
         while True:
             p_mkt = await obter_proximo_preco_ws(ws)
+            contador_ticks += 1
+
+            # Log Heartbeat a cada 30 ticks para confirmar funcionamento
+            if contador_ticks % 30 == 0:
+                log_instantaneo(f"💓 [HEARTBEAT WS] Cotação Atual BTC: {p_mkt:.2f}")
 
             if p_mkt <= p_parcial_baixa:
-                print(f"🎯 [PUSH DIRECT WS] Cotação Real {p_mkt:.2f} <= Parcial Queda {p_parcial_baixa:.2f}!", flush=True)
+                log_instantaneo(f"🎯 [PUSH DIRECT WS] Cotação Real {p_mkt:.2f} <= Parcial Queda {p_parcial_baixa:.2f}!")
                 lado_atingido = 'QUEDA'
                 break
 
             if p_mkt >= p_parcial_alta:
-                print(f"🎯 [PUSH DIRECT WS] Cotação Real {p_mkt:.2f} >= Parcial Alta {p_parcial_alta:.2f}!", flush=True)
+                log_instantaneo(f"🎯 [PUSH DIRECT WS] Cotação Real {p_mkt:.2f} >= Parcial Alta {p_parcial_alta:.2f}!")
                 lado_atingido = 'ALTA'
                 break
 
             if p_mkt <= p_0x0_baixa or p_mkt >= p_0x0_alta:
-                print(f"🏁 Trava 0x0 atingida na Fase 1! Cotação: {p_mkt:.2f}", flush=True)
+                log_instantaneo(f"🏁 Trava 0x0 atingida na Fase 1! Cotação: {p_mkt:.2f}")
                 taxa_saida = nocional_total * TAXA_TAKER_BINANCE
                 SALDO_BANCA_USDT -= taxa_saida
-                print(f"🛑 Operação encerrada no 0x0. Saldo Banca: ${SALDO_BANCA_USDT:.2f} USDT\n", flush=True)
+                log_instantaneo(f"🛑 Operação encerrada no 0x0. Saldo Banca: ${SALDO_BANCA_USDT:.2f} USDT\n")
                 return
 
         # 3. FASE 2: Liquidação da Parcial + Acompanhamento do Repique
@@ -100,8 +113,8 @@ async def executar_ciclo_paper_nativo():
             lucro_liquido_parcial = lucro_bruto_parcial - taxa_parcial
             
             SALDO_BANCA_USDT += lucro_liquido_parcial
-            print(f"🎉 [PARCIAL DISPARADA] Lucro Líquido na Carteira: +${lucro_liquido_parcial:.4f} USDT", flush=True)
-            print(f"🚀 [FASE 2 REPIQUE] Acompanhando movimento do preço na Mainnet...", flush=True)
+            log_instantaneo(f"🎉 [PARCIAL DISPARADA] Lucro Líquido na Carteira: +${lucro_liquido_parcial:.4f} USDT")
+            log_instantaneo(f"🚀 [FASE 2 REPIQUE] Acompanhando movimento do preço na Mainnet...")
 
             while True:
                 p_mkt = await obter_proximo_preco_ws(ws)
@@ -112,10 +125,10 @@ async def executar_ciclo_paper_nativo():
                         taxa_repique = (CAPITAL_POR_LADO * LEVERAGE) * abs(EXPOSICAO_LIQUIDA) * TAXA_TAKER_BINANCE
                         ganho_final = lucro_repique - taxa_repique
                         SALDO_BANCA_USDT += ganho_final
-                        print(f"🏆 [REPIQUE CONCLUÍDO!] Ganho Final Depositado: +${ganho_final:.4f} USDT", flush=True)
+                        log_instantaneo(f"🏆 [REPIQUE CONCLUÍDO!] Ganho Final Depositado: +${ganho_final:.4f} USDT")
                         break
                     elif p_mkt <= p_0x0_baixa:
-                        print(f"🛡️ Saída na Trava 0x0 do Repique. Lucro da Parcial mantido no caixa!", flush=True)
+                        log_instantaneo(f"🛡️ Saída na Trava 0x0 do Repique. Lucro da Parcial mantido no caixa!")
                         break
 
                 elif lado_atingido == 'ALTA':
@@ -124,24 +137,31 @@ async def executar_ciclo_paper_nativo():
                         taxa_repique = (CAPITAL_POR_LADO * LEVERAGE) * abs(EXPOSICAO_LIQUIDA) * TAXA_TAKER_BINANCE
                         ganho_final = lucro_repique - taxa_repique
                         SALDO_BANCA_USDT += ganho_final
-                        print(f"🏆 [REPIQUE CONCLUÍDO!] Ganho Final Depositado: +${ganho_final:.4f} USDT", flush=True)
+                        log_instantaneo(f"🏆 [REPIQUE CONCLUÍDO!] Ganho Final Depositado: +${ganho_final:.4f} USDT")
                         break
                     elif p_mkt >= p_0x0_alta:
-                        print(f"🛡️ Saída na Trava 0x0 do Repique. Lucro da Parcial mantido no caixa!", flush=True)
+                        log_instantaneo(f"🛡️ Saída na Trava 0x0 do Repique. Lucro da Parcial mantido no caixa!")
                         break
 
-            print(f"📊 [RESULTADO DO CICLO] Saldo Atual da Banca: ${SALDO_BANCA_USDT:.2f} USDT\n", flush=True)
+            log_instantaneo(f"📊 [RESULTADO DO CICLO] Saldo Atual da Banca: ${SALDO_BANCA_USDT:.2f} USDT\n")
 
 async def main_loop():
+    log_instantaneo("🤖 Bot APEX Paper Trader Iniciando Event Loop...")
     while True:
         try:
             await executar_ciclo_paper_nativo()
-            print(f"⏳ Cooldown de {COOLDOWN_SEGUNDOS/60:.1f} minutos para o próximo ciclo...\n", flush=True)
+            log_instantaneo(f"⏳ Cooldown de {COOLDOWN_SEGUNDOS/60:.1f} minutos para o próximo ciclo...\n")
             await asyncio.sleep(COOLDOWN_SEGUNDOS)
         except Exception as e:
-            print(f"⚠️ Erro no ciclo Mainnet WebSocket: {e}", flush=True)
+            log_instantaneo(f"⚠️ Erro no ciclo Mainnet WebSocket: {e}")
             await asyncio.sleep(10)
 
-if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
+def iniciar_bot():
     asyncio.run(main_loop())
+
+if __name__ == '__main__':
+    # Inicia a thread do Bot e força flush nos logs
+    t = threading.Thread(target=iniciar_bot, daemon=True)
+    t.start()
+    log_instantaneo("🚀 Servidor Flask e Thread de Trading disparados!")
+    run_flask()
