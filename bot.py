@@ -39,12 +39,13 @@ def run_flask():
 
 async def executar_ciclo_paper(exchange):
     global SALDO_BANCA_USDT
-    print(f"\n🌐 [MAINNET PAPER TRADING] Conectando ao WebSocket de Produção no par {SYMBOL}...", flush=True)
+    print(f"\n🌐 [MAINNET PURE WEBSOCKET] Conectando direto no Socket Real do par {SYMBOL}...", flush=True)
     print(f"💰 Saldo da Banca Simulada: ${SALDO_BANCA_USDT:.2f} USDT", flush=True)
 
-    # 1. Obter Preço em Tempo Real na Mainnet
-    ticker = await exchange.fetch_ticker(SYMBOL)
-    p_ref = float(ticker['last'])
+    # 1. Obter o primeiro preço via WebSocket Stream (Sem usar HTTP REST para evitar IP Ban)
+    print("⏳ Aguardando primeiro Ticker via WebSocket...", flush=True)
+    ticker_inicial = await exchange.watch_ticker(SYMBOL)
+    p_ref = float(ticker_inicial['last'])
     
     # Taxa Taker de Abertura Simulada (Long + Short)
     nocional_total = (CAPITAL_POR_LADO * LEVERAGE) * 2     # $200 USD Nocional
@@ -59,14 +60,14 @@ async def executar_ciclo_paper(exchange):
     p_0x0_alta = p_ref * (1.0 + TRAVA_0X0_PCT)
     p_alvo_alta = p_ref * (1.0 + ALVO_FINAL_PCT)
 
-    print(f"✅ [ENTRADA SIMULADA] PMP Mainnet: {p_ref:.2f} | Taxa Abertura: -${taxa_abertura:.4f} USDT", flush=True)
+    print(f"✅ [ENTRADA SIMULADA WS] PMP Mainnet: {p_ref:.2f} | Taxa Abertura: -${taxa_abertura:.4f} USDT", flush=True)
     print(f"📌 Queda -> Parcial: {p_parcial_baixa:.2f} | 0x0 Limite: {p_0x0_baixa:.2f} | Alvo Repique: {p_alvo_baixa:.2f}", flush=True)
     print(f"📌 Alta  -> Parcial: {p_parcial_alta:.2f} | 0x0 Limite: {p_0x0_alta:.2f} | Alvo Repique: {p_alvo_alta:.2f}", flush=True)
-    print("⚡ [WS MAINNET ATIVO] Ouvindo cotações de alta velocidade da Binance Real...", flush=True)
+    print("⚡ [STREAM ATIVO] Acompanhando cada mudança de tick no mercado real...", flush=True)
 
     lado_atingido = None
 
-    # 2. FASE 1: Escuta Instantânea no WebSocket de Produção
+    # 2. FASE 1: Escuta Instantânea de Cotação
     while True:
         try:
             ticker = await exchange.watch_ticker(SYMBOL)
@@ -93,7 +94,7 @@ async def executar_ciclo_paper(exchange):
                 return
 
         except Exception as e:
-            print(f"⚠️ Alerta no Stream WebSocket Mainnet: {e}", flush=True)
+            print(f"⚠️ Alerta Stream WS: {e}", flush=True)
             await asyncio.sleep(1)
 
     # 3. FASE 2: Liquidação da Parcial e Monitoramento do Repique
@@ -137,16 +138,19 @@ async def executar_ciclo_paper(exchange):
                         break
 
             except Exception as e:
-                print(f"⚠️ Alerta no Stream Fase 2: {e}", flush=True)
+                print(f"⚠️ Alerta Stream Fase 2: {e}", flush=True)
                 await asyncio.sleep(1)
 
         print(f"📊 [RESULTADO DO CICLO] Saldo Atual da Banca: ${SALDO_BANCA_USDT:.2f} USDT\n", flush=True)
 
 async def main_loop():
-    # Conexão direta aos endpoints públicos da Mainnet de alta velocidade da Binance
+    # Desativa requisições HTTP REST automáticas de inicialização de mercado
     exchange = ccxtpro.binance({
         'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
+        'options': {
+            'defaultType': 'future',
+            'fetchMarkets': False  # Impede requisições HTTP REST bloqueadas
+        }
     })
     try:
         while True:
